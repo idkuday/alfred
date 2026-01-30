@@ -1,0 +1,27 @@
+# Core dependencies
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+
+# HTTP client for Home Assistant
+aiohttp>=3.9.0
+
+# Optional: For self-improvement features
+gitpython>=3.1.40
+
+langchain>=0.1.0
+langchain-community>=0.0.20
+langchain-ollama>=1.0.0
+
+# Optional: llama-cpp-python (no longer used, replaced by Ollama)
+# llama-cpp-python>=0.2.0
+
+# Speech to Text
+faster-whisper>=1.0.0
+
+# Multi-Agent Orchestration
+langgraph>=0.0.10
+langchain-core>=0.1.0
+
+

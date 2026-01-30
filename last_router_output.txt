@@ -1,0 +1,4 @@
+{
+  "intent": "call_tool",
+  "tool": "SquareRootCalculatorDeviceIntegration",
+  "parameters": { "action": "calculate", "target": "value", "value": "144" }

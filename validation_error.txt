@@ -1,0 +1,1 @@
+Router output failed schema validation: {'intent': 'call_tool', 'tool': 'home_assistant', 'parameters': {'action': 'turn_on', 'target': 'light', 'room': 'bedroom'}}. Error: model_validate
