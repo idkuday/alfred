@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from .config import settings
-from .models import Command, CommandResponse
+from .models import Command, CommandResponse, VoiceCommandResponse
 from .integration.home_assistant import HomeAssistantIntegration
 from .plugins import plugin_manager
 from .intent_processor import IntentProcessor
@@ -94,10 +94,6 @@ async def lifespan(app: FastAPI):
             max_tokens=settings.alfred_qa_max_tokens,
         )
         logger.info(f"Alfred Q/A handler initialized with model: {settings.alfred_qa_model}")
-    except Exception as exc:
-        logger.error(f"Failed to initialize Q/A handler: {exc}", exc_info=True)
-        qa_handler = None
-
     except Exception as exc:
         logger.error(f"Failed to initialize Q/A handler: {exc}", exc_info=True)
         qa_handler = None
@@ -275,7 +271,7 @@ async def execute_command(request: ExecuteRequest):
 async def transcribe_audio(file: UploadFile = File(...)):
     """
     Transcribe an uploaded audio file.
-    
+
     Returns:
         JSON object with "text".
     """
@@ -289,6 +285,127 @@ async def transcribe_audio(file: UploadFile = File(...)):
     except Exception as exc:
         logger.error(f"Transcription failed: {exc}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Transcription failed: {str(exc)}")
+
+
+@app.post("/voice-command", response_model=VoiceCommandResponse)
+async def voice_command(file: UploadFile = File(...)):
+    """
+    Process a voice command: transcribe audio, route, and execute.
+
+    Combines transcription + routing + execution in a single call.
+    Frontend handles VAD (voice activity detection) and sends complete audio.
+
+    Returns:
+        VoiceCommandResponse with transcript, intent, result, and status.
+    """
+    # Step 1: Transcribe audio
+    if not transcriber:
+        return VoiceCommandResponse(
+            transcript="",
+            error="Transcriber not initialized",
+            processed=False
+        )
+
+    try:
+        transcript = await transcriber.transcribe(file.file)
+    except Exception as exc:
+        logger.error(f"Transcription failed: {exc}", exc_info=True)
+        return VoiceCommandResponse(
+            transcript="",
+            error=f"Transcription failed: {str(exc)}",
+            processed=False
+        )
+
+    # Step 2: Check for empty transcript
+    if not transcript or not transcript.strip():
+        return VoiceCommandResponse(
+            transcript=transcript or "",
+            error=None,
+            processed=False
+        )
+
+    # Step 3: Route through Alfred Router
+    if not alfred_router:
+        return VoiceCommandResponse(
+            transcript=transcript,
+            error="Router not available",
+            processed=False
+        )
+
+    tools = list_tools()
+    try:
+        decision: RouterDecision = alfred_router.route(
+            user_input=transcript, tools=tools
+        )
+    except ValueError as exc:
+        logger.error(f"Router failed: {exc}", exc_info=True)
+        return VoiceCommandResponse(
+            transcript=transcript,
+            error=f"Router failed: {str(exc)}",
+            processed=False
+        )
+
+    # Step 4: Execute based on decision type
+    try:
+        if isinstance(decision, CallToolDecision):
+            result = await _handle_call_tool(decision)
+            return VoiceCommandResponse(
+                transcript=transcript,
+                intent="call_tool",
+                result=result.model_dump() if hasattr(result, 'model_dump') else result.dict(),
+                processed=True
+            )
+
+        if isinstance(decision, RouteToQADecision):
+            if not qa_handler:
+                return VoiceCommandResponse(
+                    transcript=transcript,
+                    intent="route_to_qa",
+                    error="Q/A handler not available",
+                    processed=False
+                )
+            answer = await qa_handler.answer(decision.query)
+            return VoiceCommandResponse(
+                transcript=transcript,
+                intent="route_to_qa",
+                result={"answer": answer},
+                processed=True
+            )
+
+        if isinstance(decision, ProposeNewToolDecision):
+            return VoiceCommandResponse(
+                transcript=transcript,
+                intent="propose_new_tool",
+                result={
+                    "name": decision.name,
+                    "description": decision.description,
+                    "executable": False,
+                },
+                processed=False  # Proposals are not executable
+            )
+
+        # Unknown decision type
+        return VoiceCommandResponse(
+            transcript=transcript,
+            error="Unsupported router decision",
+            processed=False
+        )
+
+    except HTTPException as exc:
+        return VoiceCommandResponse(
+            transcript=transcript,
+            intent=decision.intent if hasattr(decision, 'intent') else None,
+            error=exc.detail,
+            processed=False
+        )
+    except Exception as exc:
+        logger.error(f"Execution failed: {exc}", exc_info=True)
+        return VoiceCommandResponse(
+            transcript=transcript,
+            intent=decision.intent if hasattr(decision, 'intent') else None,
+            error=f"Execution failed: {str(exc)}",
+            processed=False
+        )
 
 
 @app.get("/devices")
