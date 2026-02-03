@@ -45,4 +45,13 @@ class DeviceInfo(BaseModel):
     attributes: Optional[Dict[str, Any]] = None
 
 
+class VoiceCommandResponse(BaseModel):
+    """Response from voice command (transcribe + route + execute)."""
+    transcript: str
+    intent: Optional[str] = None  # "call_tool", "route_to_qa", "propose_new_tool"
+    result: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+    processed: bool = False  # True if transcript was routed/executed
+
+
 
