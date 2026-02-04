@@ -1,8 +1,10 @@
 """
-Alfred Router (Gemma-3 270M).
+Alfred Router.
 
 Deterministic, JSON-only router implemented as a single LLM invocation.
 No agents, chains, memory, callbacks, retries, or heuristic parsing.
+
+Default model: Qwen 2.5 3B (configurable via ALFRED_ROUTER_MODEL)
 """
 import json
 from pathlib import Path
@@ -14,7 +16,7 @@ from .schemas import RouterDecision, CallToolDecision
 
 
 class AlfredRouter:
-    """Thin routing layer that delegates decisions to Gemma-3 270M."""
+    """Thin routing layer that delegates decisions to the configured LLM."""
 
     def __init__(
         self,

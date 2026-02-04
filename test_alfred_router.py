@@ -29,7 +29,7 @@ try:
         RouteToQADecision,
         ProposeNewToolDecision,
     )
-    from ai_server.alfred_router.qa_handler import GemmaQAHandler
+    from ai_server.alfred_router.qa_handler import OllamaQAHandler
     from ai_server.alfred_router.tool_registry import list_tools
 except ImportError as e:
     print("❌ ERROR: Missing required dependencies")
@@ -87,7 +87,7 @@ def print_decision_type(decision: RouterDecision):
 
 async def execute_decision(
     decision: RouterDecision,
-    qa_handler: Optional[GemmaQAHandler],
+    qa_handler: Optional[OllamaQAHandler],
 ) -> None:
     """
     Execute the router decision (mocked for tools, real for QA).
@@ -125,7 +125,7 @@ async def run_test(
     test_input: str,
     router: AlfredRouter,
     tools: List[Dict[str, str]],
-    qa_handler: Optional[GemmaQAHandler],
+    qa_handler: Optional[OllamaQAHandler],
 ) -> bool:
     """
     Run a single test case.
@@ -198,7 +198,7 @@ async def main():
     if settings.alfred_qa_model:
         print("🔧 Initializing QA Handler...")
         try:
-            qa_handler = GemmaQAHandler(
+            qa_handler = OllamaQAHandler(
                 model=settings.alfred_qa_model,
                 temperature=settings.alfred_qa_temperature,
                 max_tokens=settings.alfred_qa_max_tokens,

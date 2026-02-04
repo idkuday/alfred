@@ -1,8 +1,10 @@
 """
 Q/A handler abstraction.
 
-Uses a thin LangChain LLM wrapper for Gemma-2B/7B. This path is read-only and
+Uses a thin LangChain LLM wrapper via Ollama. This path is read-only and
 cannot execute tools or modify state.
+
+Default model: Qwen 2.5 3B (configurable via ALFRED_QA_MODEL)
 """
 from abc import ABC, abstractmethod
 from typing import Optional
@@ -19,9 +21,9 @@ class QAHandler(ABC):
         raise NotImplementedError
 
 
-class GemmaQAHandler(QAHandler):
+class OllamaQAHandler(QAHandler):
     """
-    Gemma-based Q/A handler (read-only).
+    Ollama-based Q/A handler (read-only).
 
     This wrapper is intentionally minimal: a single LLM invocation with no
     agents, tools, memory, or callbacks.
@@ -62,4 +64,6 @@ class GemmaQAHandler(QAHandler):
         return response.strip() if isinstance(response, str) else str(response).strip()
 
 
+# Backward compatibility alias
+GemmaQAHandler = OllamaQAHandler
 
