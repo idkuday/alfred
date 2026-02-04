@@ -30,16 +30,16 @@ class Settings(BaseSettings):
     # Device mapping (room -> device mappings)
     device_mappings: dict = {}
 
-    # Alfred Router (Gemma-3 270M)
-    alfred_router_model: str = os.getenv("ALFRED_ROUTER_MODEL", "llama3.2")
+    # Alfred Router
+    alfred_router_model: str = os.getenv("ALFRED_ROUTER_MODEL", "qwen2.5:3b")
     alfred_router_prompt_path: str = os.getenv(
         "ALFRED_ROUTER_PROMPT_PATH", "ai_server/alfred_router/prompts/router.txt"
     )
     alfred_router_temperature: float = float(os.getenv("ALFRED_ROUTER_TEMPERATURE", 0.0))
     alfred_router_max_tokens: int = int(os.getenv("ALFRED_ROUTER_MAX_TOKENS", 1024))
 
-    # Alfred Q/A (Gemma-2B/7B) - read-only
-    alfred_qa_model: str = os.getenv("ALFRED_QA_MODEL", "llama3.2")
+    # Alfred Q/A - read-only
+    alfred_qa_model: str = os.getenv("ALFRED_QA_MODEL", "qwen2.5:3b")
     alfred_qa_temperature: float = float(os.getenv("ALFRED_QA_TEMPERATURE", 0.1))
     alfred_qa_max_tokens: int = int(os.getenv("ALFRED_QA_MAX_TOKENS", 512))
 

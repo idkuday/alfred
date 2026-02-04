@@ -22,7 +22,7 @@ from .alfred_router.schemas import (
     RouteToQADecision,
     ProposeNewToolDecision,
 )
-from .alfred_router.qa_handler import GemmaQAHandler
+from .alfred_router.qa_handler import OllamaQAHandler
 from .alfred_router.tool_registry import list_tools
 from .audio.transcriber import Transcriber
 
@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 ha_integration: HomeAssistantIntegration = None
 intent_processor: IntentProcessor = None
 alfred_router: Optional[AlfredRouter] = None
-qa_handler: Optional[GemmaQAHandler] = None
+qa_handler: Optional[OllamaQAHandler] = None
 transcriber: Optional[Transcriber] = None
 
 
@@ -73,7 +73,7 @@ async def lifespan(app: FastAPI):
         plugin_manager.load_plugins()
         logger.info(f"Loaded {len(plugin_manager.list_integrations())} integration plugins")
 
-    # Initialize Alfred Router (Gemma-3 270M)
+    # Initialize Alfred Router
     try:
         alfred_router = AlfredRouter(
             model=settings.alfred_router_model,
@@ -86,9 +86,9 @@ async def lifespan(app: FastAPI):
         logger.error(f"Failed to initialize Alfred Router: {exc}", exc_info=True)
         alfred_router = None
 
-    # Initialize Q/A handler (Gemma-2B/7B, read-only)
+    # Initialize Q/A handler (read-only)
     try:
-        qa_handler = GemmaQAHandler(
+        qa_handler = OllamaQAHandler(
             model=settings.alfred_qa_model,
             temperature=settings.alfred_qa_temperature,
             max_tokens=settings.alfred_qa_max_tokens,
