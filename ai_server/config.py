@@ -30,8 +30,8 @@ class Settings(BaseSettings):
     # Device mapping (room -> device mappings)
     device_mappings: dict = {}
 
-    # Alfred Router (Gemma-3 270M)
-    alfred_router_model: str = os.getenv("ALFRED_ROUTER_MODEL", "llama3.2")
+    # Alfred Router
+    alfred_router_model: str = os.getenv("ALFRED_ROUTER_MODEL", "qwen2.5:3b")
     alfred_router_prompt_path: str = os.getenv(
         "ALFRED_ROUTER_PROMPT_PATH", "ai_server/alfred_router/prompts/router.txt"
     )
