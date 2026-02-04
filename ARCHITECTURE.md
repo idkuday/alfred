@@ -9,7 +9,7 @@ The "Home Ai" system is a local-first smart home assistant that integrates with 
 The central nervous system.
 - **Main**: Exposes REST endpoints (`/execute`, `/transcribe`, `/devices`).
 - **Integration Layer**: Connects to Home Assistant and loads generic Plugins.
-- **Alfred Router**: A semantic router (based on Gemma) that decides which tool to call based on user input.
+- **Alfred Router**: A semantic router (using Qwen 2.5 3B via Ollama) that decides which tool to call based on user input.
 
 ### 2. The Forge (Agentic Loop)
 A meta-agent system responsible for creating *new* capabilities (plugins).
