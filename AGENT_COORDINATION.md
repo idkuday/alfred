@@ -600,9 +600,104 @@ The memory module is complete and ready for context injection. Router agent need
 **Note**: Router/Q&A handlers receive a pre-built context string from `ContextProvider.build_context()`. They do NOT fetch history themselves. This keeps the abstraction clean for future summary-based context.
 
 **Next Steps**:
-- Router agent: Add context injection to prompts
+- Router agent: Add context injection to prompts ✅ COMPLETE
 - UI agent: Add session tracking and "New Chat" button
 - No PR yet - waiting for Router and UI agents to complete their work on this branch
+
+---
+
+## 2026-02-09 - Router Agent - Context Injection Complete ✅
+
+**Context**: Implemented conversation context injection per coordinator's specification (lines 380-410)
+
+**Completed**:
+
+### 1. Router Context Injection ✅
+- Updated `alfred_router/router.py`:
+  - Added `conversation_context: Optional[str]` parameter to `route()` method
+  - Added `conversation_context` parameter to `_render_prompt()` method
+  - Injects context as `## Recent Conversation:` section before current request
+  - Format: `## Recent Conversation:\n{context}\n\n## Current Request:\n{user_input}`
+  - Backward compatible (context is optional, defaults to None)
+
+### 2. QA Handler Context Injection ✅
+- Updated `alfred_router/qa_handler.py`:
+  - Added `conversation_context: Optional[str]` parameter to abstract `QAHandler.answer()`
+  - Added `conversation_context` parameter to `OllamaQAHandler.answer()`
+  - Injects context after system message, before query
+  - Format: `{system_msg}\n## Recent Conversation:\n{context}\n\n## Current Query:\n{query}`
+  - Backward compatible (context is optional, defaults to None)
+
+### 3. Main API Integration ✅
+- Updated `ai_server/main.py`:
+  - `/execute` endpoint: Passes `conversation_context` from `MessageHistoryProvider.build_context()` to both router and QA handler
+  - `/voice-command` endpoint: Passes `None` for now (marked with TODO - needs session support from API agent)
+  - Router receives context for better routing decisions based on conversation history
+  - QA handler receives context for contextually-aware answers
+
+### 4. Unit Tests ✅ (10 tests)
+- Created `tests/test_router_context.py` - 4 tests:
+  - `test_route_with_context` - Context injected into prompt
+  - `test_route_without_context` - Backward compatible (no context works)
+  - `test_context_format_in_prompt` - Context appears in correct position
+  - `test_empty_context_treated_as_none` - Empty string handled correctly
+- Created `tests/test_qa_context.py` - 6 tests:
+  - `test_answer_with_context` - Context injected into QA prompt
+  - `test_answer_without_context` - Backward compatible
+  - `test_context_appears_after_system_message` - Context positioning verified
+  - `test_response_stripped_correctly` - Response formatting
+  - `test_empty_context_treated_as_none` - Empty string handled correctly
+  - `test_model_name_in_system_message` - Model name properly injected
+- All 30 tests passing (20 from API agent + 10 from Router agent)
+
+**Files Modified**:
+- `ai_server/alfred_router/router.py` - Context injection in router
+- `ai_server/alfred_router/qa_handler.py` - Context injection in QA handler
+- `ai_server/main.py` - Pass context to router and QA handler
+
+**Files Created**:
+- `tests/test_router_context.py` - Router context unit tests
+- `tests/test_qa_context.py` - QA handler context unit tests
+
+**Branch**: `feature/session-memory`
+**Commit**: `8d959f8` - Router agent: Add conversation context injection to router & QA handler
+**Pushed to**: `origin/feature/session-memory`
+
+**Testing**:
+```bash
+# Run all tests
+pytest tests/ -v
+# 30 passed, 6 skipped
+
+# Test conversation continuity with sessions
+curl -X POST http://localhost:8000/execute \
+  -H "Content-Type: application/json" \
+  -d '{"user_input": "Hello Alfred"}'
+# Returns session_id
+
+curl -X POST http://localhost:8000/execute \
+  -H "Content-Type: application/json" \
+  -d '{"user_input": "What did I just say?", "session_id": "<session_id>"}'
+# Alfred should reference "Hello Alfred" in the response
+```
+
+**Design Notes**:
+- Router and QA handler receive **pre-built context strings** from `ContextProvider.build_context()`
+- They do NOT fetch history themselves - this keeps abstraction clean
+- When API agent later swaps to summary-based context, router/QA code doesn't change
+- Context is completely optional - all existing code continues to work without context
+- Format is clearly delineated with `##` headers for easy LLM parsing
+
+**Next Steps for UI Agent**:
+- Add session tracking to frontend (track `session_id` in state)
+- Add "New Chat" button to reset session
+- Send `session_id` with every `/execute` request
+- Optionally: Add session list sidebar to resume past conversations
+
+**Notes**:
+- `/voice-command` endpoint needs session support added by API agent before context will work there
+- Currently passes `None` for context (marked with TODO comments)
+- All changes are backward compatible - existing code without sessions works unchanged
 
 ---
 
