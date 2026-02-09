@@ -285,11 +285,13 @@ async def execute_command(request: ExecuteRequest):
             logger.error(f"Failed to build context: {exc}", exc_info=True)
             conversation_context = ""
 
-    # Route the request (context will be passed to router in future - router agent's task)
+    # Route the request with conversation context
     tools = list_tools()
     try:
         decision: RouterDecision = alfred_router.route(
-            user_input=request.user_input, tools=tools
+            user_input=request.user_input,
+            tools=tools,
+            conversation_context=conversation_context if conversation_context else None
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -305,7 +307,10 @@ async def execute_command(request: ExecuteRequest):
     elif isinstance(decision, RouteToQADecision):
         if not qa_handler:
             raise HTTPException(status_code=503, detail="Q/A handler not available")
-        answer = await qa_handler.answer(decision.query)
+        answer = await qa_handler.answer(
+            query=decision.query,
+            conversation_context=conversation_context if conversation_context else None
+        )
         result = {"intent": "route_to_qa", "answer": answer}
         assistant_response = answer
 
@@ -411,7 +416,9 @@ async def voice_command(file: UploadFile = File(...)):
     tools = list_tools()
     try:
         decision: RouterDecision = alfred_router.route(
-            user_input=transcript, tools=tools
+            user_input=transcript,
+            tools=tools,
+            conversation_context=None  # TODO: Add session support to voice-command endpoint
         )
     except ValueError as exc:
         logger.error(f"Router failed: {exc}", exc_info=True)
@@ -440,7 +447,10 @@ async def voice_command(file: UploadFile = File(...)):
                     error="Q/A handler not available",
                     processed=False
                 )
-            answer = await qa_handler.answer(decision.query)
+            answer = await qa_handler.answer(
+                query=decision.query,
+                conversation_context=None  # TODO: Add session support to voice-command endpoint
+            )
             return VoiceCommandResponse(
                 transcript=transcript,
                 intent="route_to_qa",

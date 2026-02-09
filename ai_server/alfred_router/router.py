@@ -8,7 +8,7 @@ Default model: Qwen 2.5 3B (configurable via ALFRED_ROUTER_MODEL)
 """
 import json
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from langchain_ollama import OllamaLLM
 
@@ -32,18 +32,48 @@ class AlfredRouter:
             num_predict=max_tokens,
         )
 
-    def _render_prompt(self, user_input: str, tools: List[Dict[str, str]]) -> str:
+    def _render_prompt(
+        self,
+        user_input: str,
+        tools: List[Dict[str, str]],
+        conversation_context: Optional[str] = None
+    ) -> str:
         tools_json = json.dumps(tools, indent=2)
-        return self.prompt_template.format(user_input=user_input.strip(), tools=tools_json)
 
-    def route(self, user_input: str, tools: List[Dict[str, str]]) -> RouterDecision:
+        # Inject conversation context before user input if provided
+        if conversation_context:
+            context_section = f"\n## Recent Conversation:\n{conversation_context}\n\n## Current Request:\n"
+            user_input_with_context = context_section + user_input.strip()
+        else:
+            user_input_with_context = user_input.strip()
+
+        return self.prompt_template.format(
+            user_input=user_input_with_context,
+            tools=tools_json
+        )
+
+    def route(
+        self,
+        user_input: str,
+        tools: List[Dict[str, str]],
+        conversation_context: Optional[str] = None
+    ) -> RouterDecision:
         """
         Invoke the router model exactly once and validate the structured output.
+
+        Args:
+            user_input: The current user request.
+            tools: List of available tools.
+            conversation_context: Optional conversation history context (pre-built string).
 
         Raises:
             ValueError: if output is non-JSON or fails validation.
         """
-        prompt = self._render_prompt(user_input=user_input, tools=tools)
+        prompt = self._render_prompt(
+            user_input=user_input,
+            tools=tools,
+            conversation_context=conversation_context
+        )
 
         raw_output = self.llm.invoke(prompt)
         if not isinstance(raw_output, str):
