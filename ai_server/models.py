@@ -3,6 +3,7 @@ Data models for commands, responses, and device states.
 """
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
+from datetime import datetime
 from enum import Enum
 
 
@@ -52,6 +53,21 @@ class VoiceCommandResponse(BaseModel):
     result: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
     processed: bool = False  # True if transcript was routed/executed
+
+
+class ChatMessage(BaseModel):
+    """A single message in a conversation session."""
+    role: str  # "user" or "assistant"
+    content: str
+    timestamp: datetime
+
+
+class SessionMeta(BaseModel):
+    """Metadata about a conversation session."""
+    session_id: str
+    created_at: datetime
+    last_active: datetime
+    message_count: int
 
 
 
