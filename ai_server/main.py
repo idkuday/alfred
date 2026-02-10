@@ -3,11 +3,13 @@ AI Server - Smart Home AI Assistant
 Main FastAPI application for processing commands and controlling devices.
 """
 import logging
+import base64
 from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from .config import settings
@@ -25,6 +27,7 @@ from .alfred_router.schemas import (
 from .alfred_router.qa_handler import OllamaQAHandler
 from .alfred_router.tool_registry import list_tools
 from .audio.transcriber import Transcriber
+from .audio.synthesizer import Synthesizer
 from .memory import SessionStore, MessageHistoryProvider
 
 # Configure logging
@@ -44,6 +47,7 @@ intent_processor: IntentProcessor = None
 alfred_router: Optional[AlfredRouter] = None
 qa_handler: Optional[OllamaQAHandler] = None
 transcriber: Optional[Transcriber] = None
+synthesizer: Optional[Synthesizer] = None
 session_store: Optional[SessionStore] = None
 context_provider: Optional[MessageHistoryProvider] = None
 
@@ -51,7 +55,7 @@ context_provider: Optional[MessageHistoryProvider] = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan context manager for startup/shutdown."""
-    global ha_integration, intent_processor, alfred_router, qa_handler, transcriber, session_store, context_provider
+    global ha_integration, intent_processor, alfred_router, qa_handler, transcriber, synthesizer, session_store, context_provider
 
     # Startup
     logger.info("Starting AI Server...")
@@ -116,6 +120,25 @@ async def lifespan(app: FastAPI):
         logger.error(f"Failed to initialize Transcriber: {exc}", exc_info=True)
         transcriber = None
 
+    # Initialize Synthesizer (Piper TTS)
+    if settings.tts_enabled:
+        try:
+            synthesizer = Synthesizer(
+                voice_model=settings.piper_voice_model,
+                speaker_id=settings.piper_speaker_id,
+            )
+            # Pre-load model to avoid latency on first request
+            # Note: This is blocking, but okay for startup
+            synthesizer.load_model()
+            logger.info(f"Synthesizer initialized with voice: {settings.piper_voice_model}")
+        except Exception as exc:
+            logger.error(f"Failed to initialize Synthesizer: {exc}", exc_info=True)
+            logger.warning("TTS will be disabled. Voice mode will not work.")
+            synthesizer = None
+    else:
+        logger.info("TTS is disabled in config")
+        synthesizer = None
+
     # Initialize Session Store
     try:
         session_store = SessionStore(db_path=settings.session_db_path)
@@ -165,6 +188,7 @@ class ExecuteRequest(BaseModel):
 
     user_input: str
     session_id: Optional[str] = None
+    voice_mode: bool = False  # When True, include audio_base64 in response
 
 
 def _build_command_from_parameters(parameters: dict) -> Command:
@@ -355,15 +379,37 @@ async def execute_command(request: ExecuteRequest):
         except Exception as exc:
             logger.error(f"Failed to save messages to session: {exc}", exc_info=True)
 
-    # Add session_id to response
+    # Synthesize response to audio if voice_mode is enabled
+    audio_base64 = None
+    if request.voice_mode and synthesizer:
+        try:
+            logger.info("Synthesizing response to audio (voice mode enabled)")
+            wav_bytes = await synthesizer.synthesize(assistant_response)
+            audio_base64 = base64.b64encode(wav_bytes).decode('utf-8')
+            logger.debug(f"Synthesized {len(wav_bytes)} bytes of audio")
+        except Exception as exc:
+            logger.error(f"Failed to synthesize audio: {exc}", exc_info=True)
+            # Don't fail the request, just log and continue without audio
+            audio_base64 = None
+    elif request.voice_mode and not synthesizer:
+        logger.warning("Voice mode requested but synthesizer not available")
+
+    # Add session_id and audio to response
     if isinstance(result, dict):
         result["session_id"] = current_session_id
+        if audio_base64:
+            result["audio_base64"] = audio_base64
     elif hasattr(result, 'model_dump'):
         result_dict = result.model_dump()
         result_dict["session_id"] = current_session_id
+        if audio_base64:
+            result_dict["audio_base64"] = audio_base64
         return result_dict
     else:
-        return {**result.__dict__, "session_id": current_session_id}
+        result_dict = {**result.__dict__, "session_id": current_session_id}
+        if audio_base64:
+            result_dict["audio_base64"] = audio_base64
+        return result_dict
 
     return result
 
@@ -386,6 +432,45 @@ async def transcribe_audio(file: UploadFile = File(...)):
     except Exception as exc:
         logger.error(f"Transcription failed: {exc}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Transcription failed: {str(exc)}")
+
+
+class SynthesizeRequest(BaseModel):
+    """Request for text-to-speech synthesis."""
+    text: str
+
+
+@app.post("/synthesize")
+async def synthesize_text(request: SynthesizeRequest):
+    """
+    Synthesize text to speech using Piper TTS.
+
+    Args:
+        request: JSON with "text" field
+
+    Returns:
+        StreamingResponse with audio/wav content
+    """
+    if not synthesizer:
+        raise HTTPException(
+            status_code=503,
+            detail="Synthesizer not initialized. Check TTS_ENABLED config and voice model."
+        )
+
+    if not request.text or not request.text.strip():
+        raise HTTPException(status_code=400, detail="Text cannot be empty")
+
+    try:
+        wav_bytes = await synthesizer.synthesize(request.text)
+        return StreamingResponse(
+            iter([wav_bytes]),
+            media_type="audio/wav",
+            headers={
+                "Content-Disposition": "attachment; filename=speech.wav"
+            }
+        )
+    except Exception as exc:
+        logger.error(f"Synthesis failed: {exc}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Synthesis failed: {str(exc)}")
 
 
 @app.post("/voice-command", response_model=VoiceCommandResponse)
