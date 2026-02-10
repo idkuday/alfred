@@ -73,24 +73,31 @@ class Synthesizer:
             return self._create_silent_wav()
 
         # Synthesize audio using Piper
-        # PiperVoice.synthesize_stream_raw returns PCM audio samples
-        audio_buffer = io.BytesIO()
+        # PiperVoice.synthesize() returns a generator of AudioChunk objects
+        from piper.config import SynthesisConfig
 
-        # Collect audio samples from generator
-        audio_samples = []
-        for audio_bytes in self.voice.synthesize_stream_raw(text, speaker_id=self.speaker_id):
-            audio_samples.append(audio_bytes)
+        syn_config = None
+        if self.speaker_id is not None:
+            syn_config = SynthesisConfig(speaker_id=self.speaker_id)
+
+        audio_chunks = []
+        sample_rate = None
+
+        for chunk in self.voice.synthesize(text, syn_config=syn_config):
+            # Extract PCM audio bytes from the chunk
+            audio_chunks.append(chunk.audio_int16_bytes)
+            if sample_rate is None:
+                sample_rate = chunk.sample_rate
 
         # Concatenate all audio bytes
-        pcm_audio = b''.join(audio_samples)
+        pcm_audio = b''.join(audio_chunks)
 
         # Wrap PCM in WAV format
         wav_buffer = io.BytesIO()
         with wave.open(wav_buffer, 'wb') as wav_file:
-            # Piper outputs 16-bit mono PCM at 22050 Hz (default)
             wav_file.setnchannels(1)  # Mono
             wav_file.setsampwidth(2)  # 16-bit
-            wav_file.setframerate(22050)  # 22050 Hz sample rate
+            wav_file.setframerate(sample_rate or 22050)  # Use voice's sample rate
             wav_file.writeframes(pcm_audio)
 
         wav_buffer.seek(0)
