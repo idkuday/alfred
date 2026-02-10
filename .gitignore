@@ -236,3 +236,4 @@ TODO_MEMORY.md
 
 # Alfred session database (runtime data)
 alfred_sessions.db
+test_response.json
