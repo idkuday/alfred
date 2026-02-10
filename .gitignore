@@ -195,6 +195,10 @@ last_router_output.txt
 ai_server/alfred_router/prompts/router.txt
 ai_server/alfred_router/prompts/qa.txt
 
+# Piper voice models (large binary files)
+ai_server/audio/voices/*.onnx
+ai_server/audio/voices/*.onnx.json
+
 # Ruff stuff:
 .ruff_cache/
 
@@ -232,3 +236,4 @@ TODO_MEMORY.md
 
 # Alfred session database (runtime data)
 alfred_sessions.db
+test_response.json

@@ -52,7 +52,12 @@ class Settings(BaseSettings):
     whisper_model: str = os.getenv("WHISPER_MODEL", "tiny.en")
     whisper_device: str = os.getenv("WHISPER_DEVICE", "cpu")  # "cuda" or "cpu"
     whisper_compute_type: str = os.getenv("WHISPER_COMPUTE_TYPE", "int8")  # "float16" for cuda, "int8" for cpu
-    
+
+    # Text to Speech (Piper)
+    piper_voice_model: str = os.getenv("PIPER_VOICE_MODEL", "ai_server/audio/voices/en_GB-alan-medium.onnx")
+    piper_speaker_id: Optional[int] = None  # For multi-speaker models
+    tts_enabled: bool = os.getenv("TTS_ENABLED", "true").lower() in ("true", "1", "yes")
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
