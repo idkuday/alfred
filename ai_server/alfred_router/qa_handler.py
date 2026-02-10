@@ -6,10 +6,17 @@ cannot execute tools or modify state.
 
 Default model: Qwen 2.5 3B (configurable via ALFRED_QA_MODEL)
 """
+import logging
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Optional
 import asyncio
 from langchain_ollama import OllamaLLM
+
+logger = logging.getLogger(__name__)
+
+# Default prompt path (next to this file, in prompts/)
+_DEFAULT_QA_PROMPT = Path(__file__).parent / "prompts" / "qa.txt"
 
 
 class QAHandler(ABC):
@@ -33,11 +40,15 @@ class OllamaQAHandler(QAHandler):
 
     This wrapper is intentionally minimal: a single LLM invocation with no
     agents, tools, memory, or callbacks.
+
+    The system prompt is loaded from prompts/qa.txt — kept local and untracked
+    by git so personality customizations stay private.
     """
 
     def __init__(
         self,
         model: str,
+        prompt_path: Optional[str] = None,
         temperature: float = 0.1,
         max_tokens: int = 512,
     ):
@@ -48,25 +59,23 @@ class OllamaQAHandler(QAHandler):
             num_predict=max_tokens,
         )
 
+        # Load system prompt from file
+        prompt_file = Path(prompt_path) if prompt_path else _DEFAULT_QA_PROMPT
+        if not prompt_file.exists():
+            raise FileNotFoundError(
+                f"QA prompt file not found: {prompt_file}\n"
+                f"Create this file with your Alfred personality prompt.\n"
+                f"This file is intentionally untracked by git — it stays local to your machine."
+            )
+        self.system_prompt_template = prompt_file.read_text(encoding="utf-8")
+        logger.info(f"QA prompt loaded from {prompt_file}")
+
+    def _build_system_message(self) -> str:
+        """Render the system prompt, injecting model name."""
+        return self.system_prompt_template.format(model_name=self.model_name)
+
     async def answer(self, query: str, conversation_context: Optional[str] = None) -> str:
-        # Build system message
-        system_message = (
-            "You are Alfred, a smart home AI assistant.\n\n"
-            "About you:\n"
-            "- Name: Alfred\n"
-            f"- Model: You are powered by {self.model_name} running locally via Ollama\n"
-            "- Purpose: Help users control their smart home devices and answer questions\n"
-            "- Architecture: Local-first, privacy-focused (running entirely on user's network, no cloud)\n"
-            "- Capabilities: Control lights, switches, thermostats, answer questions, integrate with Home Assistant\n"
-            "- Personality: Helpful, concise, friendly, slightly witty like Jarvis\n\n"
-            "Guidelines:\n"
-            "- Be helpful and direct\n"
-            "- Keep responses concise (2-3 sentences max)\n"
-            "- Be friendly but professional\n"
-            "- If asked about your capabilities, mention smart home control and Q&A\n"
-            "- If asked what model you are, tell them you run on {model_name} locally\n"
-            "- If you don't know something, say so honestly\n"
-        ).format(model_name=self.model_name)
+        system_message = self._build_system_message()
 
         # Inject conversation context if provided
         if conversation_context:

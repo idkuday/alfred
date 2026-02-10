@@ -15,7 +15,7 @@ from .models import Command, CommandResponse, VoiceCommandResponse, ChatMessage,
 from .integration.home_assistant import HomeAssistantIntegration
 from .plugins import plugin_manager
 from .intent_processor import IntentProcessor
-from .alfred_router.router import AlfredRouter, decision_requires_intent_processor
+from .alfred_router.router import AlfredRouter, RouterRefusalError, decision_requires_intent_processor
 from .alfred_router.schemas import (
     RouterDecision,
     CallToolDecision,
@@ -293,6 +293,26 @@ async def execute_command(request: ExecuteRequest):
             tools=tools,
             conversation_context=conversation_context if conversation_context else None
         )
+    except RouterRefusalError as exc:
+        # LLM safety filter activated — return the raw refusal text as a QA-style
+        # response instead of crashing. This keeps the one-LLM-call principle
+        # since the model already responded.
+        logger.info(f"Router refusal for input: {request.user_input[:100]!r}")
+        assistant_response = exc.raw_output
+
+        # Save messages to session
+        if session_store and current_session_id:
+            try:
+                session_store.save_message(current_session_id, "user", request.user_input)
+                session_store.save_message(current_session_id, "assistant", assistant_response)
+            except Exception as save_exc:
+                logger.error(f"Failed to save messages to session: {save_exc}", exc_info=True)
+
+        return {
+            "intent": "route_to_qa",
+            "answer": assistant_response,
+            "session_id": current_session_id,
+        }
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -419,6 +439,15 @@ async def voice_command(file: UploadFile = File(...)):
             user_input=transcript,
             tools=tools,
             conversation_context=None  # TODO: Add session support to voice-command endpoint
+        )
+    except RouterRefusalError as exc:
+        # LLM safety filter — return refusal text as a QA answer
+        logger.info(f"Router refusal for voice input: {transcript[:100]!r}")
+        return VoiceCommandResponse(
+            transcript=transcript,
+            intent="route_to_qa",
+            result={"answer": exc.raw_output},
+            processed=True
         )
     except ValueError as exc:
         logger.error(f"Router failed: {exc}", exc_info=True)
