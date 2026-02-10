@@ -212,3 +212,23 @@ ai_server/alfred_router/prompts/qa.txt
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Multi-agent development (Claude Code)
+# Agent-specific configuration and context directories
+.claude-*/
+.claude/
+AGENT_COORDINATION.md
+AGENT_QUICK_REFERENCE.md
+MULTI_AGENT_SETUP.md
+
+# Development documentation (local-only planning/notes)
+ALFRED_PERSONALITY_PLAN.md
+CLAUDE.md
+CODEBASE_SUMMARY.md
+SETUP_COMPLETE.md
+TODO_BACKEND_FIXES.md
+TODO_CHATUI.md
+TODO_MEMORY.md
+
+# Alfred session database (runtime data)
+alfred_sessions.db
