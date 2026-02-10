@@ -24,4 +24,9 @@ faster-whisper>=1.0.0
 langgraph>=0.0.10
 langchain-core>=0.1.0
 
+# Testing
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+httpx>=0.25.0
+
 

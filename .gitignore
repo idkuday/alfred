@@ -188,6 +188,13 @@ cython_debug/
 #  you could uncomment the following to ignore the entire vscode folder
 # .vscode/
 
+# Alfred debug output
+last_router_output.txt
+
+# Alfred system prompts (local-only, private personality config)
+ai_server/alfred_router/prompts/router.txt
+ai_server/alfred_router/prompts/qa.txt
+
 # Ruff stuff:
 .ruff_cache/
 

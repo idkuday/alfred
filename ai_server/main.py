@@ -11,11 +11,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from .config import settings
-from .models import Command, CommandResponse, VoiceCommandResponse
+from .models import Command, CommandResponse, VoiceCommandResponse, ChatMessage, SessionMeta
 from .integration.home_assistant import HomeAssistantIntegration
 from .plugins import plugin_manager
 from .intent_processor import IntentProcessor
-from .alfred_router.router import AlfredRouter, decision_requires_intent_processor
+from .alfred_router.router import AlfredRouter, RouterRefusalError, decision_requires_intent_processor
 from .alfred_router.schemas import (
     RouterDecision,
     CallToolDecision,
@@ -25,6 +25,7 @@ from .alfred_router.schemas import (
 from .alfred_router.qa_handler import OllamaQAHandler
 from .alfred_router.tool_registry import list_tools
 from .audio.transcriber import Transcriber
+from .memory import SessionStore, MessageHistoryProvider
 
 # Configure logging
 logging.basicConfig(
@@ -43,13 +44,15 @@ intent_processor: IntentProcessor = None
 alfred_router: Optional[AlfredRouter] = None
 qa_handler: Optional[OllamaQAHandler] = None
 transcriber: Optional[Transcriber] = None
+session_store: Optional[SessionStore] = None
+context_provider: Optional[MessageHistoryProvider] = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan context manager for startup/shutdown."""
-    global ha_integration, intent_processor, alfred_router, qa_handler, transcriber
-    
+    global ha_integration, intent_processor, alfred_router, qa_handler, transcriber, session_store, context_provider
+
     # Startup
     logger.info("Starting AI Server...")
     
@@ -113,6 +116,24 @@ async def lifespan(app: FastAPI):
         logger.error(f"Failed to initialize Transcriber: {exc}", exc_info=True)
         transcriber = None
 
+    # Initialize Session Store
+    try:
+        session_store = SessionStore(db_path=settings.session_db_path)
+        context_provider = MessageHistoryProvider(
+            session_store=session_store,
+            limit=settings.session_history_limit
+        )
+        logger.info(f"Session store initialized at {settings.session_db_path}")
+
+        # Cleanup expired sessions on startup
+        cleaned = session_store.cleanup_expired(timeout_minutes=settings.session_timeout_minutes)
+        if cleaned > 0:
+            logger.info(f"Cleaned up {cleaned} expired sessions on startup")
+    except Exception as exc:
+        logger.error(f"Failed to initialize Session Store: {exc}", exc_info=True)
+        session_store = None
+        context_provider = None
+
     yield
     
     # Shutdown
@@ -143,6 +164,7 @@ class ExecuteRequest(BaseModel):
     """Raw user input for Alfred Router."""
 
     user_input: str
+    session_id: Optional[str] = None
 
 
 def _build_command_from_parameters(parameters: dict) -> Command:
@@ -231,40 +253,119 @@ async def execute_command(request: ExecuteRequest):
     """
     Execute a request via Alfred Router.
 
-    - Accepts raw user input (text).
+    - Accepts raw user input (text) and optional session_id.
+    - If no session_id provided, creates a new session.
+    - Injects conversation context before routing.
+    - Saves user message and assistant response to session.
     - Invokes router once (JSON-only).
     - Dispatches to integrations/Q&A based on validated router decision.
     """
     if not alfred_router:
         raise HTTPException(status_code=503, detail="Router not available")
 
+    # Session management
+    current_session_id = request.session_id
+    conversation_context = ""
+
+    if session_store and context_provider:
+        # Create session if needed
+        if not current_session_id:
+            current_session_id = session_store.create_session()
+            logger.info(f"Created new session: {current_session_id}")
+        else:
+            # Verify session exists, create if not
+            if not session_store.session_exists(current_session_id):
+                logger.warning(f"Session {current_session_id} not found, creating new one")
+                current_session_id = session_store.create_session()
+
+        # Build conversation context
+        try:
+            conversation_context = context_provider.build_context(current_session_id)
+        except Exception as exc:
+            logger.error(f"Failed to build context: {exc}", exc_info=True)
+            conversation_context = ""
+
+    # Route the request with conversation context
     tools = list_tools()
     try:
         decision: RouterDecision = alfred_router.route(
-            user_input=request.user_input, tools=tools
+            user_input=request.user_input,
+            tools=tools,
+            conversation_context=conversation_context if conversation_context else None
         )
+    except RouterRefusalError as exc:
+        # LLM safety filter activated — return the raw refusal text as a QA-style
+        # response instead of crashing. This keeps the one-LLM-call principle
+        # since the model already responded.
+        logger.info(f"Router refusal for input: {request.user_input[:100]!r}")
+        assistant_response = exc.raw_output
+
+        # Save messages to session
+        if session_store and current_session_id:
+            try:
+                session_store.save_message(current_session_id, "user", request.user_input)
+                session_store.save_message(current_session_id, "assistant", assistant_response)
+            except Exception as save_exc:
+                logger.error(f"Failed to save messages to session: {save_exc}", exc_info=True)
+
+        return {
+            "intent": "route_to_qa",
+            "answer": assistant_response,
+            "session_id": current_session_id,
+        }
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    if isinstance(decision, CallToolDecision):
-        return await _handle_call_tool(decision)
+    # Execute based on decision
+    result = None
+    assistant_response = ""
 
-    if isinstance(decision, RouteToQADecision):
+    if isinstance(decision, CallToolDecision):
+        result = await _handle_call_tool(decision)
+        assistant_response = result.message or f"Executed {result.action} on {result.target}"
+
+    elif isinstance(decision, RouteToQADecision):
         if not qa_handler:
             raise HTTPException(status_code=503, detail="Q/A handler not available")
-        answer = await qa_handler.answer(decision.query)
-        return {"intent": "route_to_qa", "answer": answer}
+        answer = await qa_handler.answer(
+            query=decision.query,
+            conversation_context=conversation_context if conversation_context else None
+        )
+        result = {"intent": "route_to_qa", "answer": answer}
+        assistant_response = answer
 
-    if isinstance(decision, ProposeNewToolDecision):
+    elif isinstance(decision, ProposeNewToolDecision):
         # Non-executable proposal only
-        return {
+        result = {
             "intent": "propose_new_tool",
             "name": decision.name,
             "description": decision.description,
             "executable": False,
         }
+        assistant_response = f"I can help you create a new tool: {decision.name}"
 
-    raise HTTPException(status_code=400, detail="Unsupported router decision")
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported router decision")
+
+    # Save messages to session
+    if session_store and current_session_id:
+        try:
+            session_store.save_message(current_session_id, "user", request.user_input)
+            session_store.save_message(current_session_id, "assistant", assistant_response)
+        except Exception as exc:
+            logger.error(f"Failed to save messages to session: {exc}", exc_info=True)
+
+    # Add session_id to response
+    if isinstance(result, dict):
+        result["session_id"] = current_session_id
+    elif hasattr(result, 'model_dump'):
+        result_dict = result.model_dump()
+        result_dict["session_id"] = current_session_id
+        return result_dict
+    else:
+        return {**result.__dict__, "session_id": current_session_id}
+
+    return result
 
 
 @app.post("/transcribe")
@@ -335,7 +436,18 @@ async def voice_command(file: UploadFile = File(...)):
     tools = list_tools()
     try:
         decision: RouterDecision = alfred_router.route(
-            user_input=transcript, tools=tools
+            user_input=transcript,
+            tools=tools,
+            conversation_context=None  # TODO: Add session support to voice-command endpoint
+        )
+    except RouterRefusalError as exc:
+        # LLM safety filter — return refusal text as a QA answer
+        logger.info(f"Router refusal for voice input: {transcript[:100]!r}")
+        return VoiceCommandResponse(
+            transcript=transcript,
+            intent="route_to_qa",
+            result={"answer": exc.raw_output},
+            processed=True
         )
     except ValueError as exc:
         logger.error(f"Router failed: {exc}", exc_info=True)
@@ -364,7 +476,10 @@ async def voice_command(file: UploadFile = File(...)):
                     error="Q/A handler not available",
                     processed=False
                 )
-            answer = await qa_handler.answer(decision.query)
+            answer = await qa_handler.answer(
+                query=decision.query,
+                conversation_context=None  # TODO: Add session support to voice-command endpoint
+            )
             return VoiceCommandResponse(
                 transcript=transcript,
                 intent="route_to_qa",
@@ -426,12 +541,102 @@ async def get_device(entity_id: str):
     """Get information about a specific device."""
     if not ha_integration:
         raise HTTPException(status_code=503, detail="Home Assistant not available")
-    
+
     device = await ha_integration.get_device_info(entity_id)
     if not device:
         raise HTTPException(status_code=404, detail=f"Device {entity_id} not found")
-    
+
     return device.dict()
+
+
+# Session Management Endpoints
+
+@app.get("/sessions")
+async def list_sessions():
+    """
+    List all conversation sessions with metadata.
+
+    Returns:
+        List of sessions ordered by last_active (most recent first)
+    """
+    if not session_store:
+        raise HTTPException(status_code=503, detail="Session store not available")
+
+    sessions = session_store.list_sessions()
+    return {
+        "count": len(sessions),
+        "sessions": [s.to_dict() for s in sessions]
+    }
+
+
+@app.post("/sessions")
+async def create_session():
+    """
+    Explicitly create a new conversation session.
+
+    Returns:
+        New session_id
+    """
+    if not session_store:
+        raise HTTPException(status_code=503, detail="Session store not available")
+
+    session_id = session_store.create_session()
+    return {"session_id": session_id}
+
+
+@app.get("/sessions/{session_id}")
+async def get_session(session_id: str):
+    """
+    Get a session with its full message history.
+
+    Args:
+        session_id: Session ID
+
+    Returns:
+        Session metadata and message history
+    """
+    if not session_store:
+        raise HTTPException(status_code=503, detail="Session store not available")
+
+    if not session_store.session_exists(session_id):
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+    # Get session metadata
+    sessions = session_store.list_sessions()
+    session_meta = next((s for s in sessions if s.session_id == session_id), None)
+
+    if not session_meta:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+    # Get message history (all messages, not just last N)
+    messages = session_store.get_history(session_id, limit=1000)
+
+    return {
+        "session": session_meta.to_dict(),
+        "messages": [m.to_dict() for m in messages]
+    }
+
+
+@app.delete("/sessions/{session_id}")
+async def delete_session(session_id: str):
+    """
+    Delete a conversation session and all its messages.
+
+    Args:
+        session_id: Session ID
+
+    Returns:
+        Success status
+    """
+    if not session_store:
+        raise HTTPException(status_code=503, detail="Session store not available")
+
+    deleted = session_store.delete_session(session_id)
+
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+    return {"status": "success", "message": f"Session {session_id} deleted"}
 
 
 if __name__ == "__main__":

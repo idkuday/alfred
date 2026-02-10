@@ -41,7 +41,12 @@ class Settings(BaseSettings):
     # Alfred Q/A - read-only
     alfred_qa_model: str = os.getenv("ALFRED_QA_MODEL", "qwen2.5:3b")
     alfred_qa_temperature: float = float(os.getenv("ALFRED_QA_TEMPERATURE", 0.1))
-    alfred_qa_max_tokens: int = int(os.getenv("ALFRED_QA_MAX_TOKENS", 512))
+    alfred_qa_max_tokens: int = int(os.getenv("ALFRED_QA_MAX_TOKENS", 2048))
+
+    # Session Memory
+    session_db_path: str = os.getenv("SESSION_DB_PATH", "alfred_sessions.db")
+    session_timeout_minutes: int = int(os.getenv("SESSION_TIMEOUT_MINUTES", 30))
+    session_history_limit: int = int(os.getenv("SESSION_HISTORY_LIMIT", 10))
 
     # Speech to Text (Faster Whisper)
     whisper_model: str = os.getenv("WHISPER_MODEL", "tiny.en")
