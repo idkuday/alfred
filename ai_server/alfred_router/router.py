@@ -18,6 +18,105 @@ from .schemas import RouterDecision, CallToolDecision, RouteToQADecision
 logger = logging.getLogger(__name__)
 
 
+# Default router prompt (used if prompt file not found)
+DEFAULT_ROUTER_PROMPT = """You are Alfred Router.
+
+CONTEXT: You route requests for Alfred, a smart home AI assistant.
+Alfred is a local-first, privacy-focused assistant that helps users control smart home devices and answer questions.
+
+You are a deterministic routing engine.
+You are NOT a chat assistant.
+You must make EXACTLY ONE decision.
+
+CRITICAL RULES:
+- Output MUST be valid JSON
+- Output MUST contain ONE JSON object
+- Do NOT include explanations
+- Do NOT include markdown (no ```json blocks)
+- Do NOT include text before or after JSON
+- Do NOT include comments
+- Keys and string values must be double-quoted
+- If you are unsure, choose route_to_qa
+
+Allowed outputs ONLY:
+
+CALL TOOL:
+{{
+  "intent": "call_tool",
+  "tool": "<string>",
+  "parameters": {{ }}
+}}
+
+ROUTE TO QA:
+{{
+  "intent": "route_to_qa",
+  "query": "<string>"
+}}
+
+PROPOSE NEW TOOL:
+{{
+  "intent": "propose_new_tool",
+  "name": "<string>",
+  "description": "<string>"
+}}
+
+Tools available:
+{tools}
+
+EXAMPLES:
+
+User: Turn on the kitchen light
+Output:
+{{
+  "intent": "call_tool",
+  "tool": "home_assistant",
+  "parameters": {{ "action": "turn_on", "target": "light", "room": "kitchen" }}
+}}
+
+User: What's your name?
+Output:
+{{
+  "intent": "route_to_qa",
+  "query": "What's your name?"
+}}
+
+User: Who are you?
+Output:
+{{
+  "intent": "route_to_qa",
+  "query": "Who are you?"
+}}
+
+User: What can you do?
+Output:
+{{
+  "intent": "route_to_qa",
+  "query": "What can you do?"
+}}
+
+User: What is the weather?
+Output:
+{{
+  "intent": "route_to_qa",
+  "query": "What is the weather?"
+}}
+
+User: Add a new tool to control the garage
+Output:
+{{
+  "intent": "propose_new_tool",
+  "name": "garage_control",
+  "description": "Control the garage door"
+}}
+
+User input:
+{user_input}
+
+REMEMBER:
+OUTPUT JSON ONLY.
+ENSURE THE JSON IS COMPLETE AND CLOSED."""
+
+
 class RouterRefusalError(Exception):
     """Raised when the LLM refuses a request instead of returning structured JSON.
 
@@ -42,7 +141,15 @@ class AlfredRouter:
         temperature: float = 0.0,
         max_tokens: int = 512,
     ):
-        self.prompt_template = Path(prompt_path).read_text(encoding="utf-8")
+        # Try to load prompt from file, fall back to default if not found
+        prompt_file = Path(prompt_path)
+        if prompt_file.exists():
+            self.prompt_template = prompt_file.read_text(encoding="utf-8")
+            logger.info(f"Loaded router prompt from {prompt_path}")
+        else:
+            self.prompt_template = DEFAULT_ROUTER_PROMPT
+            logger.info(f"Prompt file not found at {prompt_path}, using default prompt")
+
         self.llm = OllamaLLM(
             model=model,
             temperature=temperature,
