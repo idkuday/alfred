@@ -26,7 +26,6 @@ from .alfred_router.schemas import (
 )
 from .alfred_router.qa_handler import OllamaQAHandler
 from .alfred_router.tool_registry import list_tools
-from .core import AlfredCore
 from .audio.transcriber import Transcriber
 from .audio.synthesizer import Synthesizer
 from .memory import SessionStore, MessageHistoryProvider
@@ -47,7 +46,6 @@ ha_integration: HomeAssistantIntegration = None
 intent_processor: IntentProcessor = None
 alfred_router: Optional[AlfredRouter] = None
 qa_handler: Optional[OllamaQAHandler] = None
-alfred_core: Optional[AlfredCore] = None
 transcriber: Optional[Transcriber] = None
 synthesizer: Optional[Synthesizer] = None
 session_store: Optional[SessionStore] = None
@@ -57,7 +55,7 @@ context_provider: Optional[MessageHistoryProvider] = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan context manager for startup/shutdown."""
-    global ha_integration, intent_processor, alfred_router, qa_handler, alfred_core, transcriber, synthesizer, session_store, context_provider
+    global ha_integration, intent_processor, alfred_router, qa_handler, transcriber, synthesizer, session_store, context_provider
 
     # Startup
     logger.info("Starting AI Server...")
@@ -82,47 +80,30 @@ async def lifespan(app: FastAPI):
         plugin_manager.load_plugins()
         logger.info(f"Loaded {len(plugin_manager.list_integrations())} integration plugins")
 
-    # Initialize routing backend (controlled by ALFRED_MODE)
-    logger.info(f"Alfred mode: {settings.alfred_mode!r}")
+    # Initialize Alfred Router
+    try:
+        alfred_router = AlfredRouter(
+            model=settings.alfred_router_model,
+            prompt_path=settings.alfred_router_prompt_path,
+            temperature=settings.alfred_router_temperature,
+            max_tokens=settings.alfred_router_max_tokens,
+        )
+        logger.info(f"Alfred Router initialized with model: {settings.alfred_router_model}")
+    except Exception as exc:
+        logger.error(f"Failed to initialize Alfred Router: {exc}", exc_info=True)
+        alfred_router = None
 
-    if settings.alfred_mode == "core":
-        # AlfredCore — single LLM call, handles both conversation and tool dispatch
-        try:
-            alfred_core = AlfredCore(
-                model=settings.alfred_core_model,
-                prompt_path=settings.alfred_core_prompt_path,
-                retry_prompt_path=settings.alfred_core_retry_prompt_path,
-                temperature=settings.alfred_core_temperature,
-                max_tokens=settings.alfred_core_max_tokens,
-            )
-            logger.info(f"AlfredCore initialized with model: {settings.alfred_core_model}")
-        except Exception as exc:
-            logger.error(f"Failed to initialize AlfredCore: {exc}", exc_info=True)
-            alfred_core = None
-    else:
-        # Legacy router + QA handler (default)
-        try:
-            alfred_router = AlfredRouter(
-                model=settings.alfred_router_model,
-                prompt_path=settings.alfred_router_prompt_path,
-                temperature=settings.alfred_router_temperature,
-                max_tokens=settings.alfred_router_max_tokens,
-            )
-            logger.info(f"Alfred Router initialized with model: {settings.alfred_router_model}")
-        except Exception as exc:
-            logger.error(f"Failed to initialize Alfred Router: {exc}", exc_info=True)
-            alfred_router = None
-
-        try:
-            qa_handler = OllamaQAHandler(
-                model=settings.alfred_qa_model,
-                temperature=settings.alfred_qa_temperature,
-                max_tokens=settings.alfred_qa_max_tokens,
-            )
-            logger.info(f"Alfred Q/A handler initialized with model: {settings.alfred_qa_model}")
-        except Exception as exc:
-            logger.error(f"Failed to initialize Q/A handler: {exc}", exc_info=True)
-            qa_handler = None
+    # Initialize Q/A handler (read-only)
+    try:
+        qa_handler = OllamaQAHandler(
+            model=settings.alfred_qa_model,
+            temperature=settings.alfred_qa_temperature,
+            max_tokens=settings.alfred_qa_max_tokens,
+        )
+        logger.info(f"Alfred Q/A handler initialized with model: {settings.alfred_qa_model}")
+    except Exception as exc:
+        logger.error(f"Failed to initialize Q/A handler: {exc}", exc_info=True)
+        qa_handler = None
 
     # Initialize Transcriber (Whisper)
     try:
@@ -284,157 +265,111 @@ async def root():
 async def health_check():
     """Health check endpoint."""
     ha_healthy = await ha_integration.health_check() if ha_integration else False
-
-    # Report which backend is active and its init status
-    if settings.alfred_mode == "core":
-        backend_status = "ready" if alfred_core else "unavailable"
-    else:
-        backend_status = "ready" if alfred_router else "unavailable"
-
     return {
         "status": "healthy" if ha_healthy else "degraded",
         "home_assistant": "connected" if ha_healthy else "disconnected",
-        "plugins_loaded": len(plugin_manager.list_integrations()),
-        "alfred_mode": settings.alfred_mode,
-        "alfred_backend": backend_status,
+        "plugins_loaded": len(plugin_manager.list_integrations())
     }
 
 
 @app.post("/execute")
 async def execute_command(request: ExecuteRequest):
     """
-    Execute a user request.
-
-    Routing backend is selected by ALFRED_MODE env var:
-      - "router" (default): Alfred Router → RouteToQA / CallTool / ProposeNewTool
-      - "core": AlfredCore — single LLM call that returns plain text (conversation)
-                or tool JSON (call_tool / propose_new_tool)
+    Execute a request via Alfred Router.
 
     - Accepts raw user input (text) and optional session_id.
-    - Creates a new session if none provided.
-    - Injects conversation context from session memory before the LLM call.
-    - Saves user message and assistant response to session after completion.
-    - Optionally synthesizes response to audio when voice_mode=True.
+    - If no session_id provided, creates a new session.
+    - Injects conversation context before routing.
+    - Saves user message and assistant response to session.
+    - Invokes router once (JSON-only).
+    - Dispatches to integrations/Q&A based on validated router decision.
     """
-    # Session management (same regardless of mode)
+    if not alfred_router:
+        raise HTTPException(status_code=503, detail="Router not available")
+
+    # Session management
     current_session_id = request.session_id
     conversation_context = ""
 
     if session_store and context_provider:
+        # Create session if needed
         if not current_session_id:
             current_session_id = session_store.create_session()
             logger.info(f"Created new session: {current_session_id}")
         else:
+            # Verify session exists, create if not
             if not session_store.session_exists(current_session_id):
                 logger.warning(f"Session {current_session_id} not found, creating new one")
                 current_session_id = session_store.create_session()
 
+        # Build conversation context
         try:
             conversation_context = context_provider.build_context(current_session_id)
         except Exception as exc:
             logger.error(f"Failed to build context: {exc}", exc_info=True)
             conversation_context = ""
 
+    # Route the request with conversation context
     tools = list_tools()
+    try:
+        decision: RouterDecision = alfred_router.route(
+            user_input=request.user_input,
+            tools=tools,
+            conversation_context=conversation_context if conversation_context else None
+        )
+    except RouterRefusalError as exc:
+        # LLM safety filter activated — return the raw refusal text as a QA-style
+        # response instead of crashing. This keeps the one-LLM-call principle
+        # since the model already responded.
+        logger.info(f"Router refusal for input: {request.user_input[:100]!r}")
+        assistant_response = exc.raw_output
+
+        # Save messages to session
+        if session_store and current_session_id:
+            try:
+                session_store.save_message(current_session_id, "user", request.user_input)
+                session_store.save_message(current_session_id, "assistant", assistant_response)
+            except Exception as save_exc:
+                logger.error(f"Failed to save messages to session: {save_exc}", exc_info=True)
+
+        return {
+            "intent": "route_to_qa",
+            "answer": assistant_response,
+            "session_id": current_session_id,
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    # Execute based on decision
     result = None
     assistant_response = ""
 
-    if settings.alfred_mode == "core":
-        # ------------------------------------------------------------------ #
-        # AlfredCore path — single LLM call, plain text or tool JSON          #
-        # ------------------------------------------------------------------ #
-        if not alfred_core:
-            raise HTTPException(status_code=503, detail="AlfredCore not available")
+    if isinstance(decision, CallToolDecision):
+        result = await _handle_call_tool(decision)
+        assistant_response = result.message or f"Executed {result.action} on {result.target}"
 
-        try:
-            core_decision = await alfred_core.process(
-                user_input=request.user_input,
-                tools=tools,
-                conversation_context=conversation_context if conversation_context else None,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
+    elif isinstance(decision, RouteToQADecision):
+        if not qa_handler:
+            raise HTTPException(status_code=503, detail="Q/A handler not available")
+        answer = await qa_handler.answer(
+            query=decision.query,
+            conversation_context=conversation_context if conversation_context else None
+        )
+        result = {"intent": "route_to_qa", "answer": answer}
+        assistant_response = answer
 
-        if isinstance(core_decision, str):
-            # Plain text = conversational response (the normal Q&A path)
-            result = {"intent": "conversation", "answer": core_decision}
-            assistant_response = core_decision
-
-        elif isinstance(core_decision, CallToolDecision):
-            result = await _handle_call_tool(core_decision)
-            assistant_response = result.message or f"Executed {result.action} on {result.target}"
-
-        elif isinstance(core_decision, ProposeNewToolDecision):
-            result = {
-                "intent": "propose_new_tool",
-                "name": core_decision.name,
-                "description": core_decision.description,
-                "executable": False,
-            }
-            assistant_response = f"I can help you create a new tool: {core_decision.name}"
-
-        else:
-            raise HTTPException(status_code=400, detail="Unsupported Core decision")
+    elif isinstance(decision, ProposeNewToolDecision):
+        # Non-executable proposal only
+        result = {
+            "intent": "propose_new_tool",
+            "name": decision.name,
+            "description": decision.description,
+            "executable": False,
+        }
+        assistant_response = f"I can help you create a new tool: {decision.name}"
 
     else:
-        # ------------------------------------------------------------------ #
-        # Legacy Alfred Router path (default when ALFRED_MODE=router)         #
-        # ------------------------------------------------------------------ #
-        if not alfred_router:
-            raise HTTPException(status_code=503, detail="Router not available")
-
-        try:
-            decision: RouterDecision = alfred_router.route(
-                user_input=request.user_input,
-                tools=tools,
-                conversation_context=conversation_context if conversation_context else None,
-            )
-        except RouterRefusalError as exc:
-            # LLM safety filter activated — return raw refusal text directly.
-            # One-LLM-call principle: the model already responded, don't retry.
-            logger.info(f"Router refusal for input: {request.user_input[:100]!r}")
-            assistant_response = exc.raw_output
-
-            if session_store and current_session_id:
-                try:
-                    session_store.save_message(current_session_id, "user", request.user_input)
-                    session_store.save_message(current_session_id, "assistant", assistant_response)
-                except Exception as save_exc:
-                    logger.error(f"Failed to save messages to session: {save_exc}", exc_info=True)
-
-            return {
-                "intent": "route_to_qa",
-                "answer": assistant_response,
-                "session_id": current_session_id,
-            }
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
-
-        if isinstance(decision, CallToolDecision):
-            result = await _handle_call_tool(decision)
-            assistant_response = result.message or f"Executed {result.action} on {result.target}"
-
-        elif isinstance(decision, RouteToQADecision):
-            if not qa_handler:
-                raise HTTPException(status_code=503, detail="Q/A handler not available")
-            answer = await qa_handler.answer(
-                query=decision.query,
-                conversation_context=conversation_context if conversation_context else None,
-            )
-            result = {"intent": "route_to_qa", "answer": answer}
-            assistant_response = answer
-
-        elif isinstance(decision, ProposeNewToolDecision):
-            result = {
-                "intent": "propose_new_tool",
-                "name": decision.name,
-                "description": decision.description,
-                "executable": False,
-            }
-            assistant_response = f"I can help you create a new tool: {decision.name}"
-
-        else:
-            raise HTTPException(status_code=400, detail="Unsupported router decision")
+        raise HTTPException(status_code=400, detail="Unsupported router decision")
 
     # Save messages to session
     if session_store and current_session_id:

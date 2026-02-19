@@ -1,4 +1,0 @@
-The following JSON is malformed. Fix it and return ONLY valid JSON, nothing else.
-No explanation, no markdown, no extra text — just the corrected JSON object.
-
-{broken_output}
