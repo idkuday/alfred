@@ -112,7 +112,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$alfredRoot = "C:\Users\udayr\Documents\Projects\alfred"
+$alfredRoot = $env:ALFRED_ROOT ?? (Split-Path -Parent $PSScriptRoot)
 
 # Your script logic here
 

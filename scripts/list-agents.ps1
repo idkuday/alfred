@@ -1,8 +1,8 @@
 # List all available agents and their status
 $ErrorActionPreference = "Stop"
 
-$alfredRoot = "C:\Users\udayr\Documents\Projects\alfred"
-$alfredUiRoot = "C:\Users\udayr\Documents\Projects\alfred-ui"
+$alfredRoot = $env:ALFRED_ROOT ?? (Split-Path -Parent $PSScriptRoot)
+$alfredUiRoot = $env:ALFRED_UI_ROOT ?? (Join-Path (Split-Path -Parent $alfredRoot) "alfred-ui")
 
 $agents = @(
     @{Name="conductor"; Command="claude-alfred-conductor"; Dir=".claude-conductor"; Project="alfred"; Scope="Project root"; Primary="Coordination"},

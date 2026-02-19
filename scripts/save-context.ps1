@@ -11,12 +11,14 @@ $ErrorActionPreference = "Stop"
 
 # Determine which agent's context to update
 if ($Agent) {
-    $configDir = "C:\Users\udayr\Documents\Projects\alfred\.claude-$Agent"
+    $alfredRoot = $env:ALFRED_ROOT ?? (Split-Path -Parent $PSScriptRoot)
+    $configDir = Join-Path $alfredRoot ".claude-$Agent"
 } elseif ($env:CLAUDE_CONFIG_DIR) {
     $configDir = $env:CLAUDE_CONFIG_DIR
 } else {
     Write-Host "No agent specified and CLAUDE_CONFIG_DIR not set. Using conductor by default." -ForegroundColor Yellow
-    $configDir = "C:\Users\udayr\Documents\Projects\alfred\.claude-conductor"
+    $alfredRoot = $env:ALFRED_ROOT ?? (Split-Path -Parent $PSScriptRoot)
+    $configDir = Join-Path $alfredRoot ".claude-conductor"
 }
 
 $contextFile = Join-Path $configDir ".claudecontext"

@@ -1,7 +1,7 @@
 # Verify Alfred Multi-Agent Setup
 $ErrorActionPreference = "Stop"
 
-$alfredRoot = "C:\Users\udayr\Documents\Projects\alfred"
+$alfredRoot = $env:ALFRED_ROOT ?? (Split-Path -Parent $PSScriptRoot)
 
 Write-Host "`n╔════════════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
 Write-Host "║     Alfred Multi-Agent Setup Verification                       ║" -ForegroundColor Cyan
