@@ -221,6 +221,7 @@ __marimo__/
 # Agent-specific configuration and context directories
 .claude-*/
 .claude/
+scripts/
 AGENT_COORDINATION.md
 AGENT_QUICK_REFERENCE.md
 MULTI_AGENT_SETUP.md
@@ -237,3 +238,7 @@ TODO_MEMORY.md
 # Alfred session database (runtime data)
 alfred_sessions.db
 test_response.json
+
+# Debug/test output artifacts
+test_output.txt
+test_output_utf8.txt
