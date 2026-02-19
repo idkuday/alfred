@@ -283,6 +283,28 @@ cat last_core_output.txt      # AlfredCore
 ollama pull deepseek-r1:7b
 ```
 
+## The Forge (Experimental)
+
+The Forge is a LangGraph-based multi-agent system that can **generate new plugins automatically** from natural language descriptions. It is included in the codebase (`ai_server/forge/`) but is not yet wired into Alfred's main request flow -- it must be invoked separately.
+
+**How it works:**
+1. You describe what you need (e.g. "a plugin to calculate square roots")
+2. The Forge runs a pipeline: **Researcher** -> **Coder** -> **Tester** -> **Reviewer** -> **Publisher**
+3. The Tester validates generated code through 5 levels (syntax, runtime, instantiation, interface compliance, behavioral)
+4. If tests fail, it loops back to the Coder (max 5 iterations)
+5. On success, the plugin is written to `ai_server/plugins/` and available on next server restart
+
+**Safety:** Human approval is required before invoking the Forge. The router can only *propose* new tools (`propose_new_tool` decision) -- it cannot trigger generation on its own.
+
+```bash
+# Run the Forge standalone (experimental)
+python test_forge.py
+```
+
+## Related Projects
+
+- **[alfred-ui](https://github.com/idkuday/alfred-ui)** -- React chat frontend for Alfred (voice input, session management, dark mode)
+
 ## License
 
 MIT
