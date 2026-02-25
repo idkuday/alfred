@@ -1,7 +1,7 @@
 """
-Pydantic models for Alfred router decisions.
+Pydantic models for AlfredCore decisions.
 
-The router must return exactly one of the defined shapes. Validation errors
+Core must return exactly one of the defined shapes. Validation errors
 are surfaced directly; no heuristic parsing is allowed.
 """
 from typing import Any, Dict, Literal, Union
@@ -16,15 +16,6 @@ class CallToolDecision(BaseModel):
     parameters: Dict[str, Any] = Field(
         default_factory=dict, description="Structured parameters for the tool"
     )
-
-    model_config = ConfigDict(extra="forbid")
-
-
-class RouteToQADecision(BaseModel):
-    """Router decided to route the request to the read-only Q/A model."""
-
-    intent: Literal["route_to_qa"]
-    query: str = Field(..., description="User query for Q/A handling")
 
     model_config = ConfigDict(extra="forbid")
 
@@ -46,7 +37,7 @@ class ProposeNewToolDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-RouterDecision = Union[CallToolDecision, RouteToQADecision, ProposeNewToolDecision]
+RouterDecision = Union[CallToolDecision, ProposeNewToolDecision]
 
 
 

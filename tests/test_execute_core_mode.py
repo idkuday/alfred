@@ -1,8 +1,8 @@
 """
-Unit tests for /execute endpoint in AlfredCore mode (ALFRED_MODE=core).
+Unit tests for /execute endpoint with AlfredCore.
 
-These tests verify that when ALFRED_MODE is set to "core", the endpoint:
-- Calls alfred_core.process() instead of alfred_router.route()
+These tests verify that the endpoint:
+- Calls alfred_core.process() for all requests
 - Correctly handles all three CoreDecision types:
     - str (plain text) → {"intent": "conversation", "answer": ...}
     - CallToolDecision → dispatches to integration, returns CommandResponse
@@ -12,7 +12,7 @@ These tests verify that when ALFRED_MODE is set to "core", the endpoint:
 - Saves messages to session and includes session_id in all responses
 - Includes audio_base64 when voice_mode=True
 
-All tests mock alfred_core and settings.alfred_mode — no Ollama required.
+All tests mock alfred_core — no Ollama required.
 """
 import json
 import pytest
@@ -332,76 +332,3 @@ class TestCoreModeErrors:
         assert "audio_base64" not in data
 
 
-# ---------------------------------------------------------------------------
-# Router mode still works (regression guard)
-# ---------------------------------------------------------------------------
-
-class TestRouterModeRegression:
-    """Ensure existing router-mode behaviour is unchanged by the Core integration."""
-
-    @pytest.mark.asyncio
-    async def test_router_mode_qa_response(self):
-        """Router mode routes Q&A through qa_handler as before."""
-        from ai_server.alfred_router.schemas import RouteToQADecision
-
-        decision = RouteToQADecision(intent="route_to_qa", query="What is 2+2?")
-
-        with patch("ai_server.main.alfred_router") as mock_router, \
-             patch("ai_server.main.qa_handler") as mock_qa, \
-             patch("ai_server.main.settings") as mock_settings:
-            mock_settings.alfred_mode = "router"
-            mock_router.route.return_value = decision
-            mock_qa.answer = AsyncMock(return_value="4")
-
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                response = await client.post(
-                    "/execute",
-                    json={"user_input": "What is 2+2?"},
-                )
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data["intent"] == "route_to_qa"
-        assert data["answer"] == "4"
-
-    @pytest.mark.asyncio
-    async def test_router_mode_propose_new_tool(self):
-        """Router mode returns propose_new_tool shape correctly."""
-        decision = ProposeNewToolDecision(
-            intent="propose_new_tool",
-            name="weather_tool",
-            description="Get current weather",
-        )
-
-        with patch("ai_server.main.alfred_router") as mock_router, \
-             patch("ai_server.main.settings") as mock_settings:
-            mock_settings.alfred_mode = "router"
-            mock_router.route.return_value = decision
-
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                response = await client.post(
-                    "/execute",
-                    json={"user_input": "I want weather info"},
-                )
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data["intent"] == "propose_new_tool"
-        assert data["name"] == "weather_tool"
-        assert data["executable"] is False
-
-    @pytest.mark.asyncio
-    async def test_router_unavailable_returns_503(self):
-        """Router mode returns 503 when alfred_router is None."""
-        with patch("ai_server.main.alfred_router", None), \
-             patch("ai_server.main.settings") as mock_settings:
-            mock_settings.alfred_mode = "router"
-
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                response = await client.post(
-                    "/execute",
-                    json={"user_input": "Hello"},
-                )
-
-        assert response.status_code == 503
-        assert "Router not available" in response.json()["detail"]

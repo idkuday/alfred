@@ -3,12 +3,10 @@ Unit tests for /execute endpoint with voice_mode support.
 """
 import pytest
 import base64
-from unittest.mock import Mock, AsyncMock, patch
+from unittest.mock import AsyncMock, patch
 from httpx import AsyncClient, ASGITransport
-from ai_server.main import app, synthesizer
-from ai_server.audio.synthesizer import Synthesizer
+from ai_server.main import app
 from ai_server.alfred_router.schemas import (
-    RouteToQADecision,
     CallToolDecision,
     ProposeNewToolDecision,
 )
@@ -21,51 +19,36 @@ class TestExecuteVoiceModeDisabled:
     @pytest.mark.asyncio
     async def test_execute_voice_mode_false_no_audio(self):
         """Test execute with voice_mode=False doesn't include audio_base64."""
-        # Mock the router to return a simple QA decision
-        with patch('ai_server.main.alfred_router') as mock_router:
-            decision = RouteToQADecision(
-                intent="route_to_qa",
-                query="What is the weather?"
-            )
-            mock_router.route.return_value = decision
+        with patch('ai_server.main.alfred_core') as mock_core:
+            mock_core.process = AsyncMock(return_value="The weather today is sunny.")
 
-            with patch('ai_server.main.qa_handler') as mock_qa:
-                mock_qa.answer = AsyncMock(return_value="Test answer")
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                response = await client.post(
+                    "/execute",
+                    json={"user_input": "What is the weather?", "voice_mode": False}
+                )
 
-                async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                    response = await client.post(
-                        "/execute",
-                        json={"user_input": "What is the weather?", "voice_mode": False}
-                    )
-
-                assert response.status_code == 200
-                data = response.json()
-                assert "answer" in data
-                assert data["answer"] == "Test answer"
-                assert "audio_base64" not in data  # No audio when voice_mode=False
+            assert response.status_code == 200
+            data = response.json()
+            assert "answer" in data
+            assert data["answer"] == "The weather today is sunny."
+            assert "audio_base64" not in data  # No audio when voice_mode=False
 
     @pytest.mark.asyncio
     async def test_execute_default_no_voice_mode_no_audio(self):
         """Test execute without voice_mode field (defaults to False)."""
-        with patch('ai_server.main.alfred_router') as mock_router:
-            decision = RouteToQADecision(
-                intent="route_to_qa",
-                query="What is the weather?"
-            )
-            mock_router.route.return_value = decision
+        with patch('ai_server.main.alfred_core') as mock_core:
+            mock_core.process = AsyncMock(return_value="The weather today is sunny.")
 
-            with patch('ai_server.main.qa_handler') as mock_qa:
-                mock_qa.answer = AsyncMock(return_value="Test answer")
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                response = await client.post(
+                    "/execute",
+                    json={"user_input": "What is the weather?"}  # No voice_mode field
+                )
 
-                async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                    response = await client.post(
-                        "/execute",
-                        json={"user_input": "What is the weather?"}  # No voice_mode field
-                    )
-
-                assert response.status_code == 200
-                data = response.json()
-                assert "audio_base64" not in data  # No audio by default
+            assert response.status_code == 200
+            data = response.json()
+            assert "audio_base64" not in data  # No audio by default
 
 
 class TestExecuteVoiceModeEnabled:
@@ -74,96 +57,74 @@ class TestExecuteVoiceModeEnabled:
     @pytest.mark.asyncio
     async def test_execute_voice_mode_true_includes_audio(self):
         """Test execute with voice_mode=True includes audio_base64."""
-        # Mock the router and QA handler
-        with patch('ai_server.main.alfred_router') as mock_router:
-            decision = RouteToQADecision(
-                intent="route_to_qa",
-                query="What is the weather?"
-            )
-            mock_router.route.return_value = decision
+        with patch('ai_server.main.alfred_core') as mock_core:
+            mock_core.process = AsyncMock(return_value="Test audio response")
 
-            with patch('ai_server.main.qa_handler') as mock_qa:
-                mock_qa.answer = AsyncMock(return_value="Test audio response")
+            # Mock the synthesizer
+            with patch('ai_server.main.synthesizer') as mock_synth:
+                fake_wav = b'RIFF....WAVE....'  # Fake WAV bytes
+                mock_synth.synthesize = AsyncMock(return_value=fake_wav)
 
-                # Mock the synthesizer
-                with patch('ai_server.main.synthesizer') as mock_synth:
-                    fake_wav = b'RIFF....WAVE....'  # Fake WAV bytes
-                    mock_synth.synthesize = AsyncMock(return_value=fake_wav)
+                async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                    response = await client.post(
+                        "/execute",
+                        json={"user_input": "What is the weather?", "voice_mode": True}
+                    )
 
-                    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                        response = await client.post(
-                            "/execute",
-                            json={"user_input": "What is the weather?", "voice_mode": True}
-                        )
+                assert response.status_code == 200
+                data = response.json()
+                assert "answer" in data
+                assert data["answer"] == "Test audio response"
+                assert "audio_base64" in data  # Audio included when voice_mode=True
 
-                    assert response.status_code == 200
-                    data = response.json()
-                    assert "answer" in data
-                    assert data["answer"] == "Test audio response"
-                    assert "audio_base64" in data  # Audio included when voice_mode=True
+                # Verify audio is base64-encoded
+                audio_bytes = base64.b64decode(data["audio_base64"])
+                assert audio_bytes == fake_wav
 
-                    # Verify audio is base64-encoded
-                    audio_bytes = base64.b64decode(data["audio_base64"])
-                    assert audio_bytes == fake_wav
-
-                    # Verify synthesizer was called with the response text
-                    mock_synth.synthesize.assert_called_once_with("Test audio response")
+                # Verify synthesizer was called with the response text
+                mock_synth.synthesize.assert_called_once_with("Test audio response")
 
     @pytest.mark.asyncio
     async def test_execute_voice_mode_no_synthesizer(self):
         """Test execute with voice_mode=True gracefully handles missing synthesizer."""
-        with patch('ai_server.main.alfred_router') as mock_router:
-            decision = RouteToQADecision(
-                intent="route_to_qa",
-                query="What is the weather?"
-            )
-            mock_router.route.return_value = decision
+        with patch('ai_server.main.alfred_core') as mock_core:
+            mock_core.process = AsyncMock(return_value="Test answer")
 
-            with patch('ai_server.main.qa_handler') as mock_qa:
-                mock_qa.answer = AsyncMock(return_value="Test answer")
+            # Set synthesizer to None
+            with patch('ai_server.main.synthesizer', None):
+                async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                    response = await client.post(
+                        "/execute",
+                        json={"user_input": "What is the weather?", "voice_mode": True}
+                    )
 
-                # Set synthesizer to None
-                with patch('ai_server.main.synthesizer', None):
-                    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                        response = await client.post(
-                            "/execute",
-                            json={"user_input": "What is the weather?", "voice_mode": True}
-                        )
-
-                    # Should still succeed, just without audio
-                    assert response.status_code == 200
-                    data = response.json()
-                    assert "answer" in data
-                    assert "audio_base64" not in data  # No audio when synthesizer unavailable
+                # Should still succeed, just without audio
+                assert response.status_code == 200
+                data = response.json()
+                assert "answer" in data
+                assert "audio_base64" not in data  # No audio when synthesizer unavailable
 
     @pytest.mark.asyncio
     async def test_execute_voice_mode_synthesis_failure(self):
         """Test execute with voice_mode=True handles synthesis errors gracefully."""
-        with patch('ai_server.main.alfred_router') as mock_router:
-            decision = RouteToQADecision(
-                intent="route_to_qa",
-                query="What is the weather?"
-            )
-            mock_router.route.return_value = decision
+        with patch('ai_server.main.alfred_core') as mock_core:
+            mock_core.process = AsyncMock(return_value="Test answer")
 
-            with patch('ai_server.main.qa_handler') as mock_qa:
-                mock_qa.answer = AsyncMock(return_value="Test answer")
+            # Mock synthesizer to raise an exception
+            with patch('ai_server.main.synthesizer') as mock_synth:
+                mock_synth.synthesize = AsyncMock(side_effect=RuntimeError("Synthesis failed"))
 
-                # Mock synthesizer to raise an exception
-                with patch('ai_server.main.synthesizer') as mock_synth:
-                    mock_synth.synthesize = AsyncMock(side_effect=RuntimeError("Synthesis failed"))
+                async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                    response = await client.post(
+                        "/execute",
+                        json={"user_input": "What is the weather?", "voice_mode": True}
+                    )
 
-                    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                        response = await client.post(
-                            "/execute",
-                            json={"user_input": "What is the weather?", "voice_mode": True}
-                        )
-
-                    # Should still succeed, just without audio
-                    assert response.status_code == 200
-                    data = response.json()
-                    assert "answer" in data
-                    assert "audio_base64" not in data  # No audio on synthesis error
+                # Should still succeed, just without audio
+                assert response.status_code == 200
+                data = response.json()
+                assert "answer" in data
+                assert "audio_base64" not in data  # No audio on synthesis error
 
 
 class TestExecuteVoiceModeWithTools:
@@ -172,17 +133,17 @@ class TestExecuteVoiceModeWithTools:
     @pytest.mark.asyncio
     async def test_execute_voice_mode_with_tool_call(self):
         """Test voice_mode works with tool execution (CallToolDecision)."""
-        with patch('ai_server.main.alfred_router') as mock_router:
-            # Mock a tool call decision
-            decision = CallToolDecision(
-                intent="call_tool",
-                tool="home_assistant",
-                parameters={
-                    "action": "turn_on",
-                    "target": "light.living_room"
-                }
-            )
-            mock_router.route.return_value = decision
+        decision = CallToolDecision(
+            intent="call_tool",
+            tool="home_assistant",
+            parameters={
+                "action": "turn_on",
+                "target": "light.living_room"
+            }
+        )
+
+        with patch('ai_server.main.alfred_core') as mock_core:
+            mock_core.process = AsyncMock(return_value=decision)
 
             # Mock the tool execution
             with patch('ai_server.main._handle_call_tool') as mock_handle:
