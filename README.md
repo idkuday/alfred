@@ -15,19 +15,16 @@ User (Text / Voice)
                                 |
          +----------------------+----------------------+
          |                      |                      |
-   Alfred Router         Session Memory        STT / TTS
+    AlfredCore           Session Memory        STT / TTS
    (Ollama LLM)         (SQLite)            Whisper + Piper
          |
-   RouterDecision
-    (Pydantic validated)
-         |
-    +----+----+--------+
-    |         |        |
-call_tool  route_to_qa propose_new_tool
-    |         |        |
-    v         v        v
-Integration  QA Handler  Proposal
-   Layer     (2nd LLM)   (non-exec)
+    +----+----+
+    |         |
+call_tool  conversation
+    |         |
+    v         v
+Integration   Direct
+   Layer      Response
     |
     +------+------+
     |             |
@@ -35,24 +32,24 @@ Home Assistant  Plugins
   (local)      (auto-loaded)
 ```
 
-### How Routing Works
+### How It Works
 
-Alfred Router uses a local LLM (Qwen 2.5 3B via Ollama) to make a **single deterministic routing decision** per request. The LLM returns strictly validated JSON matching one of three decision types:
+AlfredCore uses a local LLM (Qwen 2.5 3B via Ollama) to handle all requests in a **single LLM call**. The model decides whether to respond conversationally (plain text) or invoke a tool (JSON):
 
-- **`call_tool`** -- Execute a command via Home Assistant or a plugin
-- **`route_to_qa`** -- Answer a question via a separate Q/A handler (second LLM call)
-- **`propose_new_tool`** -- Suggest a new plugin (non-executable, requires human approval)
+- **Plain text** -- Conversation, questions, jokes, help -- Alfred responds directly
+- **`call_tool` (JSON)** -- Execute a command via Home Assistant or a plugin
+- **`propose_new_tool` (JSON)** -- Suggest a new plugin (non-executable, requires human approval)
 
 ## Features
 
 - **Local-First & Private** -- All processing on your hardware, no cloud APIs
-- **Semantic Routing** -- Single-shot LLM router with strict Pydantic validation (temp=0.0)
+- **AlfredCore** -- Unified LLM brain (single call for both routing and conversation)
 - **Home Assistant Integration** -- Control lights, switches, fans, climate, covers
-- **Plugin System** -- Auto-loaded plugins extend Alfred's capabilities at startup
+- **Plugin System** -- Auto-loaded plugins extend Alfred's capabilities
 - **Speech-to-Text** -- Offline transcription via Faster Whisper
 - **Text-to-Speech** -- Offline voice output via Piper TTS
-- **Session Memory** -- Multi-turn conversations with SQLite-backed history (last 10 messages as context)
-- **The Forge** (experimental) -- LangGraph multi-agent system that generates new plugins automatically
+- **Session Memory** -- Multi-turn conversations with SQLite-backed history
+- **The Forge** (experimental) -- AI that generates new plugins automatically
 - **React Chat UI** -- Companion web app ([alfred-ui](https://github.com/idkuday/alfred-ui))
 
 ## Prerequisites
@@ -85,9 +82,8 @@ Alfred Router uses a local LLM (Qwen 2.5 3B via Ollama) to make a **single deter
    HA_URL=http://localhost:8123
    HA_TOKEN=your_long_lived_access_token
 
-   # LLM models
-   ALFRED_ROUTER_MODEL=qwen2.5:3b
-   ALFRED_QA_MODEL=qwen2.5:3b
+   # LLM model
+   ALFRED_CORE_MODEL=qwen2.5:3b
 
    # Speech-to-Text
    WHISPER_MODEL=tiny.en
@@ -110,11 +106,10 @@ Alfred Router uses a local LLM (Qwen 2.5 3B via Ollama) to make a **single deter
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/` | Root -- version info |
-| `GET` | `/health` | Health check (HA connection, router status) |
+| `GET` | `/health` | Health check (HA connection, backend status) |
 | `POST` | `/execute` | Main endpoint -- route and execute user input |
 | `POST` | `/transcribe` | Upload audio file, get transcription |
 | `POST` | `/synthesize` | Text-to-speech (returns WAV audio) |
-| `POST` | `/voice-command` | Combined transcribe + route + execute |
 | `GET` | `/devices` | List all Home Assistant devices |
 | `GET` | `/devices/{entity_id}` | Get specific device info |
 | `GET` | `/sessions` | List conversation sessions |
@@ -157,6 +152,12 @@ curl -X POST http://localhost:8000/synthesize \
   --output speech.wav
 ```
 
+### List Devices
+
+```bash
+curl http://localhost:8000/devices
+```
+
 ## Project Structure
 
 ```
@@ -165,14 +166,17 @@ alfred/
 │   ├── main.py                      # FastAPI app, endpoints, lifespan
 │   ├── config.py                    # Pydantic settings (reads .env)
 │   ├── models.py                    # Data models (Command, CommandResponse, etc.)
-│   ├── intent_processor.py          # Optional NLP helper (router selects it)
-│   ├── alfred_router/               # Semantic router (single LLM call)
-│   │   ├── router.py                #   AlfredRouter class
-│   │   ├── schemas.py               #   Decision types (CallTool, RouteToQA, ProposeNewTool)
-│   │   ├── tool_registry.py         #   Available tools list
-│   │   ├── qa_handler.py            #   Q/A handler (separate LLM call for questions)
+│   ├── intent_processor.py          # Optional NLP helper
+│   ├── core/                        # AlfredCore -- unified LLM brain
+│   │   ├── core.py                  #   AlfredCore class
 │   │   └── prompts/
-│   │       └── router.txt           #   Router prompt template
+│   │       ├── core.txt             #   Unified prompt (personality + tools)
+│   │       └── retry.txt            #   JSON fix-it retry prompt
+│   ├── alfred_router/               # Shared schemas and tool registry
+│   │   ├── schemas.py               #   Decision types (CallTool, ProposeNewTool)
+│   │   ├── tool_registry.py         #   Available tools list
+│   │   └── prompts/
+│   │       └── router.txt           #   Prompt template
 │   ├── audio/
 │   │   ├── transcriber.py           # Faster Whisper STT wrapper
 │   │   └── synthesizer.py           # Piper TTS wrapper
@@ -223,7 +227,7 @@ class MyCustomIntegration(DeviceIntegration):
         return True
 ```
 
-The plugin is auto-loaded on server startup and automatically appears in the tool registry for the router.
+The plugin is auto-loaded on server startup and automatically appears in the tool registry.
 
 ## Configuration
 
@@ -233,11 +237,9 @@ All settings are managed via environment variables (`.env` file) and `ai_server/
 |----------|---------|-------------|
 | `HA_URL` | `http://localhost:8123` | Home Assistant URL |
 | `HA_TOKEN` | `None` | HA long-lived access token |
-| `ALFRED_ROUTER_MODEL` | `qwen2.5:3b` | LLM model for router |
-| `ALFRED_ROUTER_TEMPERATURE` | `0.0` | Router temperature (keep at 0 for determinism) |
-| `ALFRED_ROUTER_MAX_TOKENS` | `1024` | Router max output tokens |
-| `ALFRED_QA_MODEL` | `qwen2.5:3b` | LLM model for Q/A handler |
-| `ALFRED_QA_MAX_TOKENS` | `2048` | Q/A max output tokens |
+| `ALFRED_CORE_MODEL` | `qwen2.5:3b` | LLM model for AlfredCore |
+| `ALFRED_CORE_TEMPERATURE` | `0.0` | Core temperature (keep at 0 for determinism) |
+| `ALFRED_CORE_MAX_TOKENS` | `2048` | Core max output tokens |
 | `WHISPER_MODEL` | `tiny.en` | Whisper model size (tiny.en, base, small, medium, large) |
 | `WHISPER_DEVICE` | `cpu` | `"cpu"` or `"cuda"` |
 | `TTS_ENABLED` | `true` | Enable/disable Piper TTS |
@@ -254,8 +256,9 @@ All settings are managed via environment variables (`.env` file) and `ai_server/
 pytest tests/ -v
 
 # Run specific test files
+pytest tests/test_core.py -v
+pytest tests/test_execute_core_mode.py -v
 pytest tests/test_session_store.py -v
-pytest tests/test_router_context.py -v
 ```
 
 ## Development
@@ -264,8 +267,8 @@ pytest tests/test_router_context.py -v
 # Start with auto-reload
 uvicorn ai_server.main:app --reload --host 0.0.0.0 --port 8000
 
-# Debug router output (check raw LLM response)
-cat last_router_output.txt
+# Debug Core output (check raw LLM response)
+cat last_core_output.txt
 
 # Pull a different model
 ollama pull deepseek-r1:7b
@@ -282,7 +285,7 @@ The Forge is a LangGraph-based multi-agent system that can **generate new plugin
 4. If tests fail, it loops back to the Coder (max 5 iterations)
 5. On success, the plugin is written to `ai_server/plugins/` and available on next server restart
 
-**Safety:** Human approval is required before invoking the Forge. The router can only *propose* new tools (`propose_new_tool` decision) -- it cannot trigger generation on its own.
+**Safety:** Human approval is required before invoking the Forge. Core can only *propose* new tools (`propose_new_tool` decision) -- it cannot trigger generation on its own.
 
 ```bash
 # Run the Forge standalone (experimental)

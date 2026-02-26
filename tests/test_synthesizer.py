@@ -75,9 +75,11 @@ class TestSynthesizerSynthesize:
 
     def test_synthesize_sync_returns_wav_bytes(self):
         """Test synthesize_sync returns valid WAV bytes."""
-        # Mock the voice synthesis to return some PCM audio data
-        mock_pcm_data = b'\x00\x01' * 100  # Fake PCM samples
-        self.synth.voice.synthesize_stream_raw.return_value = iter([mock_pcm_data])
+        # Mock the voice synthesis to return an iterable of audio chunks
+        mock_chunk = Mock()
+        mock_chunk.audio_int16_bytes = b'\x00\x01' * 100  # Fake PCM samples
+        mock_chunk.sample_rate = 22050
+        self.synth.voice.synthesize.return_value = iter([mock_chunk])
 
         wav_bytes = self.synth.synthesize_sync("Hello world")
 
@@ -92,7 +94,7 @@ class TestSynthesizerSynthesize:
             assert wav_file.getsampwidth() == 2  # 16-bit
             assert wav_file.getframerate() == 22050  # 22050 Hz
 
-        self.synth.voice.synthesize_stream_raw.assert_called_once_with("Hello world", speaker_id=None)
+        self.synth.voice.synthesize.assert_called_once_with("Hello world", syn_config=None)
 
     def test_synthesize_sync_empty_text(self):
         """Test synthesize_sync handles empty text gracefully."""
@@ -130,21 +132,29 @@ class TestSynthesizerSynthesize:
         assert "not loaded" in str(exc_info.value)
 
     def test_synthesize_sync_with_speaker_id(self):
-        """Test synthesize_sync passes speaker_id to voice model."""
+        """Test synthesize_sync passes speaker_id via SynthesisConfig to voice model."""
         self.synth.speaker_id = 2
-        mock_pcm_data = b'\x00\x01' * 100
-        self.synth.voice.synthesize_stream_raw.return_value = iter([mock_pcm_data])
+        mock_chunk = Mock()
+        mock_chunk.audio_int16_bytes = b'\x00\x01' * 100
+        mock_chunk.sample_rate = 22050
+        self.synth.voice.synthesize.return_value = iter([mock_chunk])
 
         self.synth.synthesize_sync("Hello")
 
-        self.synth.voice.synthesize_stream_raw.assert_called_once_with("Hello", speaker_id=2)
+        # speaker_id is passed via a SynthesisConfig object, not as a kwarg directly
+        self.synth.voice.synthesize.assert_called_once()
+        call_kwargs = self.synth.voice.synthesize.call_args
+        assert call_kwargs.args[0] == "Hello"
+        assert call_kwargs.kwargs["syn_config"] is not None
 
     @pytest.mark.asyncio
     async def test_synthesize_async_wrapper(self):
         """Test synthesize async wrapper works correctly."""
-        # Mock the voice synthesis
-        mock_pcm_data = b'\x00\x01' * 100
-        self.synth.voice.synthesize_stream_raw.return_value = iter([mock_pcm_data])
+        # Mock the voice synthesis to return an iterable of audio chunks
+        mock_chunk = Mock()
+        mock_chunk.audio_int16_bytes = b'\x00\x01' * 100
+        mock_chunk.sample_rate = 22050
+        self.synth.voice.synthesize.return_value = iter([mock_chunk])
 
         wav_bytes = await self.synth.synthesize("Async test")
 

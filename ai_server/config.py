@@ -30,18 +30,16 @@ class Settings(BaseSettings):
     # Device mapping (room -> device mappings)
     device_mappings: dict = {}
 
-    # Alfred Router
-    alfred_router_model: str = os.getenv("ALFRED_ROUTER_MODEL", "qwen2.5:3b")
-    alfred_router_prompt_path: str = os.getenv(
-        "ALFRED_ROUTER_PROMPT_PATH", "ai_server/alfred_router/prompts/router.txt"
+    # Alfred Core — unified brain (single LLM call for all requests)
+    alfred_core_model: str = os.getenv("ALFRED_CORE_MODEL", "qwen2.5:3b")
+    alfred_core_prompt_path: str = os.getenv(
+        "ALFRED_CORE_PROMPT_PATH", "ai_server/core/prompts/core.txt"
     )
-    alfred_router_temperature: float = float(os.getenv("ALFRED_ROUTER_TEMPERATURE", 0.0))
-    alfred_router_max_tokens: int = int(os.getenv("ALFRED_ROUTER_MAX_TOKENS", 1024))
-
-    # Alfred Q/A - read-only
-    alfred_qa_model: str = os.getenv("ALFRED_QA_MODEL", "qwen2.5:3b")
-    alfred_qa_temperature: float = float(os.getenv("ALFRED_QA_TEMPERATURE", 0.1))
-    alfred_qa_max_tokens: int = int(os.getenv("ALFRED_QA_MAX_TOKENS", 2048))
+    alfred_core_retry_prompt_path: str = os.getenv(
+        "ALFRED_CORE_RETRY_PROMPT_PATH", "ai_server/core/prompts/retry.txt"
+    )
+    alfred_core_temperature: float = float(os.getenv("ALFRED_CORE_TEMPERATURE", 0.0))
+    alfred_core_max_tokens: int = int(os.getenv("ALFRED_CORE_MAX_TOKENS", 2048))
 
     # Session Memory
     session_db_path: str = os.getenv("SESSION_DB_PATH", "alfred_sessions.db")

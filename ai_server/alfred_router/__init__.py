@@ -1,10 +1,9 @@
 """
-Alfred Router module.
+Alfred Router module — schemas and tool registry (kept for AlfredCore).
 
-Provides a thin, deterministic routing layer that delegates to integrations
-only through validated, structured outputs.
+Router and QA handler have been absorbed into AlfredCore.
 """
 
-__all__ = ["router", "schemas", "qa_handler", "tool_registry"]
+__all__ = ["schemas", "tool_registry"]
 
 
