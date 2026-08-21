@@ -1,0 +1,93 @@
+{
+  "version": 1,
+  "name": "new-capability",
+  "description": "The user wants something Alfred cannot currently do: design the capability, get it approved, build it, verify it, and install it. This is the Forge, as a graph.",
+  "entry": "design",
+  "terminal": ["installed", "declined"],
+  "limits": { "max_nodes": 40, "cost_usd": 3.00, "wall_clock": "2h" },
+
+  "nodes": [
+    {
+      "id": "design",
+      "kind": "agent",
+      "agent": "alfred-designer",
+      "prompt": "The user has asked for the capability described in inputs.request, and it does not exist. Before designing anything, establish that it really does not — read the available tools and the existing graph library, because the commonest outcome here is that the thing already exists under a name the user did not guess. If it does, emit 'already-exists' naming it. Otherwise produce a design: what the capability does, its inputs and outputs, which existing integration or plugin it would sit on, and what could go wrong with it. Be specific about whether it touches the physical world, because that decides how it is gated for the rest of its life. Emit 'designed', or 'infeasible' with the reason if it cannot be built from what this deployment has.",
+      "inputs": ["inputs.request"],
+      "outcomes": ["designed", "already-exists", "infeasible"],
+      "constraints": {
+        "tools": ["read_file", "list_dir", "search", "glob", "list_graphs"]
+      }
+    },
+    {
+      "id": "approve",
+      "kind": "human",
+      "request": {
+        "kind": "Approval",
+        "prompt": "Build this capability?",
+        "show": ["inputs.request", "outputs.design"]
+      },
+      "outcomes": ["approved", "rejected"],
+      "timeout": "24h",
+      "on_timeout": "rejected"
+    },
+    {
+      "id": "build",
+      "kind": "agent",
+      "agent": "alfred-builder",
+      "prompt": "Implement the design in outputs.design. Follow the conventions of the code already here rather than importing a style from elsewhere — read a neighbouring plugin or integration first. Write the tests as you go, in the layout this repo already uses. If a review sent you back, the feedback is in outputs.review and it is not optional. Emit 'built' when it is implemented and its tests pass, or 'blocked' with what stopped you.",
+      "inputs": ["outputs.design", "outputs.review"],
+      "outcomes": ["built", "blocked"]
+    },
+    {
+      "id": "verify",
+      "kind": "agent",
+      "agent": "alfred-verifier",
+      "prompt": "Verify what outputs.build produced against what outputs.design specified. Run the tests. Then do the thing tests do not: exercise the capability for real, once, against whatever it actually talks to — a capability that has only ever been unit-tested has not been shown to work, and this deployment's own record is that every real invocation found something. If it touches the physical world, confirm it is gated. Emit 'verified' or 'rejected' with specifics.",
+      "inputs": ["outputs.design", "outputs.build"],
+      "outcomes": ["verified", "rejected"]
+    },
+    {
+      "id": "review",
+      "kind": "human",
+      "request": {
+        "kind": "Approval",
+        "prompt": "Install this capability into the running Alfred?",
+        "show": ["outputs.design", "outputs.build", "outputs.verify"]
+      },
+      "outcomes": ["approved", "rejected", "revise"],
+      "timeout": "24h",
+      "on_timeout": "rejected"
+    },
+    {
+      "id": "installed",
+      "kind": "agent",
+      "agent": "alfred",
+      "prompt": "The capability is built, verified and approved. Tell the user what it is now able to do and how to ask for it, in a sentence or two. Do not recite the implementation.",
+      "inputs": ["inputs.request", "outputs.design", "outputs.verify"],
+      "outcomes": ["done"]
+    },
+    {
+      "id": "declined",
+      "kind": "agent",
+      "agent": "alfred",
+      "prompt": "This capability was not built — it already existed, it was refused, it timed out, or it turned out to be infeasible. Say which, briefly. If it already exists, say what to use instead. If it is infeasible, say what would have to change for it not to be.",
+      "inputs": ["inputs.request", "outputs.design", "outputs.build", "outputs.review"],
+      "outcomes": ["done"]
+    }
+  ],
+
+  "edges": [
+    { "from": "design", "to": "approve", "on": "designed" },
+    { "from": "design", "to": "declined", "on": "already-exists" },
+    { "from": "design", "to": "declined", "on": "infeasible" },
+    { "from": "approve", "to": "build", "on": "approved" },
+    { "from": "approve", "to": "declined", "on": "rejected" },
+    { "from": "build", "to": "verify", "on": "built" },
+    { "from": "build", "to": "declined", "on": "blocked" },
+    { "from": "verify", "to": "review", "on": "verified" },
+    { "from": "verify", "to": "build", "on": "rejected", "max_retries": 2 },
+    { "from": "review", "to": "installed", "on": "approved" },
+    { "from": "review", "to": "build", "on": "revise", "max_retries": 2 },
+    { "from": "review", "to": "declined", "on": "rejected" }
+  ]
+}

@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "name": "device-troubleshoot",
+  "description": "A device is not responding or is behaving oddly: diagnose it, attempt one bounded recovery, and either confirm it is fixed or hand the user something specific to act on.",
+  "entry": "diagnose",
+  "terminal": ["report", "escalate"],
+  "limits": { "max_nodes": 24, "cost_usd": 0.75, "wall_clock": "20m" },
+
+  "nodes": [
+    {
+      "id": "diagnose",
+      "kind": "agent",
+      "agent": "alfred",
+      "prompt": "The user reports a problem with the device in inputs.device. Establish what is actually true before theorising: read the entity's current state, its last-changed and last-updated timestamps, and whether the integration behind it is reachable at all. Distinguish the three cases that look identical to a user — the device is unreachable, the device is reachable and reporting a state nobody expected, and the device is fine and the user's request was ambiguous. Emit 'recoverable' if there is a specific action worth trying, 'healthy' if nothing is actually wrong, or 'needs-human' if the fix is physical (a flat battery, a tripped breaker, an unplugged bridge).",
+      "inputs": ["inputs.device", "inputs.symptom"],
+      "outcomes": ["recoverable", "healthy", "needs-human"]
+    },
+    {
+      "id": "recover",
+      "kind": "agent",
+      "agent": "alfred",
+      "prompt": "Attempt exactly the one recovery named in outputs.diagnose. One attempt — a retry loop against an unreachable device is noise, and the edge into this node is bounded for that reason. If the action is physical it will ask, as it should. Emit 'recovered' or 'still-broken', and say what the call actually returned.",
+      "inputs": ["inputs.device", "outputs.diagnose"],
+      "outcomes": ["recovered", "still-broken"]
+    },
+    {
+      "id": "confirm-fixed",
+      "kind": "agent",
+      "agent": "alfred",
+      "prompt": "Read the device's state back from the source and decide whether the original symptom in inputs.symptom is genuinely gone. A call that returned success is not evidence; the read-back is. Emit 'fixed' or 'not-fixed'.",
+      "inputs": ["inputs.device", "inputs.symptom", "outputs.recover"],
+      "outcomes": ["fixed", "not-fixed"]
+    },
+    {
+      "id": "report",
+      "kind": "agent",
+      "agent": "alfred",
+      "prompt": "Tell the user what was wrong and what you did about it, briefly and in your own voice. If nothing was wrong, say what the device is actually doing and why it may have looked broken.",
+      "inputs": ["inputs.device", "outputs.diagnose", "outputs.confirm-fixed"],
+      "outcomes": ["done"]
+    },
+    {
+      "id": "escalate",
+      "kind": "agent",
+      "agent": "alfred",
+      "prompt": "You could not fix this from here. Give the user the shortest specific thing they can do about it — which device, where, what to check — not a list of possibilities. Say plainly what you tried and what it returned. 'Have you tried turning it off and on again' is not an answer unless you can say exactly what to power cycle.",
+      "inputs": ["inputs.device", "outputs.diagnose", "outputs.recover", "outputs.confirm-fixed"],
+      "outcomes": ["done"]
+    }
+  ],
+
+  "edges": [
+    { "from": "diagnose", "to": "recover", "on": "recoverable" },
+    { "from": "diagnose", "to": "report", "on": "healthy" },
+    { "from": "diagnose", "to": "escalate", "on": "needs-human" },
+    { "from": "recover", "to": "confirm-fixed", "on": "recovered" },
+    { "from": "recover", "to": "escalate", "on": "still-broken" },
+    { "from": "confirm-fixed", "to": "report", "on": "fixed" },
+    { "from": "confirm-fixed", "to": "recover", "on": "not-fixed", "max_retries": 1 }
+  ]
+}

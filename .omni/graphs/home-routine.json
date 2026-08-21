@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "name": "home-routine",
+  "description": "Apply a named multi-device routine (morning, evening, away, movie) with one confirmation for the whole batch instead of a prompt per device.",
+  "entry": "plan",
+  "terminal": ["report", "cancelled"],
+  "limits": { "max_nodes": 20, "cost_usd": 0.50, "wall_clock": "30m" },
+
+  "nodes": [
+    {
+      "id": "plan",
+      "kind": "agent",
+      "agent": "alfred",
+      "prompt": "Work out what the routine named in inputs.routine actually requires. Read the CURRENT state of every device it touches — do not assume, and do not trust anything you were told in an earlier turn. Produce a concrete list: for each device, its entity id, its friendly name, what it is now, and what it should become. Omit devices that are already correct; a routine that reports twelve changes when two are needed is a routine nobody will approve. Emit outcome 'ready' with that list, or 'nothing-to-do' if the house is already in the requested state.",
+      "inputs": ["inputs.routine"],
+      "outcomes": ["ready", "nothing-to-do", "blocked"]
+    },
+    {
+      "id": "confirm",
+      "kind": "human",
+      "request": {
+        "kind": "Approval",
+        "prompt": "Apply this routine?",
+        "show": ["inputs.routine", "outputs.plan"]
+      },
+      "outcomes": ["approved", "rejected"],
+      "timeout": "10m",
+      "on_timeout": "rejected"
+    },
+    {
+      "id": "apply",
+      "kind": "agent",
+      "agent": "alfred",
+      "prompt": "Apply exactly the changes in outputs.plan — no more. Each physical call still asks on its own; that is expected and is not a reason to skip one or to batch them behind a single call. Record what actually returned for each device rather than what you intended. Emit 'applied' when every change returned successfully, or 'partial' when any did not, with the failures named.",
+      "inputs": ["outputs.plan"],
+      "outcomes": ["applied", "partial"]
+    },
+    {
+      "id": "verify",
+      "kind": "agent",
+      "agent": "alfred",
+      "prompt": "Read the state of every device in outputs.plan back from the source. Compare it to what the plan intended. Emit 'settled' if the house now matches, or 'drifted' with the specific devices that did not take — a device that reported success and then read back unchanged is the case this node exists to catch.",
+      "inputs": ["outputs.plan", "outputs.apply"],
+      "outcomes": ["settled", "drifted"]
+    },
+    {
+      "id": "report",
+      "kind": "agent",
+      "agent": "alfred",
+      "prompt": "Tell the user what happened, in one or two sentences, in your own voice. Name anything that did not work. Do not claim a device changed unless the verification read it back changed.",
+      "inputs": ["outputs.plan", "outputs.apply", "outputs.verify"],
+      "outcomes": ["done"]
+    },
+    {
+      "id": "cancelled",
+      "kind": "agent",
+      "agent": "alfred",
+      "prompt": "The routine was not applied — either the user declined it, the confirmation timed out, or there was nothing to do. Say so briefly and without editorialising.",
+      "inputs": ["inputs.routine", "outputs.plan"],
+      "outcomes": ["done"]
+    }
+  ],
+
+  "edges": [
+    { "from": "plan", "to": "confirm", "on": "ready" },
+    { "from": "plan", "to": "cancelled", "on": "nothing-to-do" },
+    { "from": "plan", "to": "cancelled", "on": "blocked" },
+    { "from": "confirm", "to": "apply", "on": "approved" },
+    { "from": "confirm", "to": "cancelled", "on": "rejected" },
+    { "from": "apply", "to": "verify", "on": "applied" },
+    { "from": "apply", "to": "verify", "on": "partial" },
+    { "from": "verify", "to": "report", "on": "settled" },
+    { "from": "verify", "to": "report", "on": "drifted" }
+  ]
+}
