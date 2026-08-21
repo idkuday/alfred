@@ -56,9 +56,14 @@ assembly:
 #
 # `bash` is deliberately absent. Alfred has no reason to run arbitrary shell on the
 # machine that holds the house's credentials, and the encapsulated file tools cover
-# every legitimate thing he does with a filesystem. The MCP tools from the Home
-# Assistant and plugin sidecars are not listed because they are discovered at boot from
-# `.omni/mcp.json`; naming them here would freeze a list that changes when a device does.
+# every legitimate thing he does with a filesystem.
+#
+# `mcp` is the whole Home Assistant and plugin surface in one word — the allow-list's
+# own vocabulary for "whatever the servers in .omni/mcp.json turned out to expose".
+# Naming the tools individually would freeze a list that changes whenever a device
+# does, and would have to be edited every time somebody buys a lamp. It is not a
+# widening: every one of those tools is still graded, and mcp.json grades the physical
+# ones so they ask every single call.
 tools:
   allow:
     - read_file
@@ -70,6 +75,7 @@ tools:
     - list_graphs
     - run_graph
     - create_graph
+    - mcp
 
 skills:
   active:
