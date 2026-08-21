@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "home_assistant": {
+      "command": "python",
+      "args": ["-m", "ai_server.mcp.home_assistant_server"]
+    },
+    "alfred_plugins": {
+      "command": "python",
+      "args": ["-m", "ai_server.mcp.plugins_server"]
+    }
+  }
+}
