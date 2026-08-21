@@ -1,12 +1,38 @@
 {
+  "_comment": [
+    "Grades are the point of this file, not the commands.",
+    "",
+    "MCP carries no risk vocabulary, so every MCP tool defaults to grade 'exec' —",
+    "disposition ASK, which a standing grant satisfies. Without the entries below, a",
+    "user who once approved turn_on with 'always' would have silently pre-approved",
+    "every future physical call to it, for the rest of the session and every session",
+    "carrying the same grant. 'physical' is the one grade no standing grant can reach",
+    "(kernel-design SS8): it asks every single call, every time.",
+    "",
+    "The read tools are graded down deliberately and for the same safety reason, not",
+    "for convenience: a server graded physical wholesale would prompt on every",
+    "get_state too, and a user prompted forty times an hour stops reading the prompt.",
+    "Cheapening the reads is what keeps the writes worth reading."
+  ],
   "mcpServers": {
     "home_assistant": {
       "command": "python",
-      "args": ["-m", "ai_server.mcp.home_assistant_server"]
+      "args": ["-m", "ai_server.mcp.home_assistant_server"],
+      "grade": "physical",
+      "tool_grades": {
+        "get_state": "read",
+        "list_entities": "read",
+        "health_check": "read"
+      }
     },
     "alfred_plugins": {
       "command": "python",
-      "args": ["-m", "ai_server.mcp.plugins_server"]
+      "args": ["-m", "ai_server.mcp.plugins_server"],
+      "tool_grades": {
+        "get_device_info": "read",
+        "discover_devices": "read",
+        "health_check": "read"
+      }
     }
   }
 }
