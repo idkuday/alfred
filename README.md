@@ -158,6 +158,63 @@ curl -X POST http://localhost:8000/synthesize \
 curl http://localhost:8000/devices
 ```
 
+## MCP Servers (for `omni-harness`)
+
+Alongside the FastAPI pass-through API above (kept exactly as-is, for testing),
+Alfred exposes two [MCP](https://modelcontextprotocol.io) servers so an
+`omni-harness` agent can drive Home Assistant and Alfred's plugins directly,
+each call permission-gated the same way `bash` is. Both speak the
+**2026-07-28** MCP revision (stateless, no SDK) over stdio, and both are
+plain stdlib modules under `ai_server/mcp/` — no plugin and no core code was
+rewritten to build them; they call straight through to the existing
+`HomeAssistantIntegration` and `DeviceIntegration` plugin classes.
+
+| Server | Module | Wraps |
+|---|---|---|
+| `home_assistant` | `ai_server.mcp.home_assistant_server` | `HomeAssistantIntegration` — turn_on/turn_off/toggle/set_brightness/set_temperature (physical, write) plus get_state/list_entities/health_check (read-only) |
+| `alfred_plugins` | `ai_server.mcp.plugins_server` | Every `DeviceIntegration` found in `ai_server/plugins/` — each gets `<plugin>_execute_command`, `<plugin>_get_device_info`, `<plugin>_discover_devices`, `<plugin>_health_check` |
+
+**Run standalone**, for manual testing with no runtime attached — each reads
+newline-delimited JSON-RPC on stdin and writes replies on stdout, so it can
+be driven with any MCP-speaking client, or just piped a request by hand:
+
+```bash
+python -m ai_server.mcp.home_assistant_server
+python -m ai_server.mcp.plugins_server           # --plugins-dir to override
+```
+
+**Run through `omni-harness`** — `.omni/mcp.json` in this repo already
+declares both servers, so from this repo's root:
+
+```bash
+omni --mcp
+```
+
+connects to both and exposes every tool as `mcp__home_assistant__<tool>` /
+`mcp__alfred_plugins__<tool>`. (The stdio transport spawns each server with
+no explicit working directory, so it inherits `omni`'s own — run it from
+this repo's root, as above, or the `python -m ai_server.mcp...` commands in
+`.omni/mcp.json` won't resolve the package.)
+
+Every state-changing Home Assistant tool requires an `entity_name` argument
+in addition to `entity_id` — Home Assistant never sees it, it exists only so
+a human reviewing the permission prompt sees a real device name rather than
+a bare `entity_id`.
+
+**Smoke-testing against the real omni-harness client**: `ai_server/mcp/smoke_test.py`
+starts both servers as real subprocesses and drives them with
+`omni.driver.tools.mcp.client.McpClient` from a sibling `omni-harness`
+checkout (`../omni-harness` by default; override with `--omni-harness`). It
+mocks the Home Assistant HTTP API in-process (there is usually no live HA on
+a dev machine) but everything from there on — the subprocess, the stdio
+JSON-RPC framing, tool discovery, and both a read and a write tool call — is
+real. It is a manual/documented step, not part of `pytest`, because it
+needs that sibling checkout:
+
+```bash
+python -m ai_server.mcp.smoke_test
+```
+
 ## Project Structure
 
 ```
@@ -190,11 +247,18 @@ alfred/
 │   │   ├── __init__.py              # PluginManager (auto-loading)
 │   │   ├── example_plugin.py        # Template plugin
 │   │   └── math_plugin.py           # Forge-generated example
+│   ├── mcp/                         # MCP servers (omni-harness integration)
+│   │   ├── jsonrpc.py                #   Generic 2026-07-28 stdio server engine
+│   │   ├── home_assistant_server.py  #   Wraps HomeAssistantIntegration
+│   │   ├── plugins_server.py         #   Wraps every ai_server/plugins/* integration
+│   │   └── smoke_test.py             #   Drives both servers with the real omni-harness client
 │   └── forge/                       # Self-improving AI (experimental)
 │       ├── graph.py                 #   LangGraph workflow
 │       ├── agents.py                #   Agent nodes (researcher, coder, tester, reviewer)
 │       ├── state.py                 #   ForgeState TypedDict
 │       └── prompts.py               #   Agent prompt templates
+├── .omni/
+│   └── mcp.json                     # Declares the two MCP servers to omni --mcp
 ├── tests/                           # pytest test suite
 ├── run_server.py                    # Server launcher
 ├── requirements.txt                 # Python dependencies
