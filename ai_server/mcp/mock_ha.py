@@ -20,8 +20,10 @@ import json
 import threading
 from typing import Any
 
-#: The mock house. ``light`` / ``switch`` / ``climate`` are in the integration's
-#: ``discover_devices`` domains; ``binary_sensor`` only shows up for ``status``.
+#: The mock house. ``light`` / ``switch`` / ``climate`` / ``cover`` / ``fan`` are
+#: the integration's ``discover_devices`` domains; ``sensor``, ``binary_sensor``,
+#: ``lock``, ``media_player`` and ``vacuum`` show up in ``list_entities`` (A2b),
+#: and ``sensor`` / ``binary_sensor`` / ``lock`` also in ``status``.
 MOCK_STATES: dict[str, dict[str, Any]] = {
     "light.bedroom_lamp": {
         "entity_id": "light.bedroom_lamp",
@@ -52,6 +54,52 @@ MOCK_STATES: dict[str, dict[str, Any]] = {
         "state": "off",
         "attributes": {"friendly_name": "Hallway Motion"},
         "last_changed": "2026-07-01T12:45:00+00:00",
+    },
+    "binary_sensor.front_door_contact": {
+        "entity_id": "binary_sensor.front_door_contact",
+        "state": "off",
+        "attributes": {"friendly_name": "Front Door Contact", "device_class": "door"},
+        "last_changed": "2026-07-01T08:20:00+00:00",
+    },
+    "sensor.living_room_temperature": {
+        "entity_id": "sensor.living_room_temperature",
+        "state": "71.2",
+        "attributes": {
+            "friendly_name": "Living Room Temperature",
+            "unit_of_measurement": "°F",
+            "device_class": "temperature",
+        },
+        "last_changed": "2026-07-01T14:10:00+00:00",
+    },
+    "lock.front_door": {
+        "entity_id": "lock.front_door",
+        "state": "locked",
+        "attributes": {"friendly_name": "Front Door Lock"},
+        "last_changed": "2026-07-01T08:20:00+00:00",
+    },
+    "cover.garage_door": {
+        "entity_id": "cover.garage_door",
+        "state": "closed",
+        "attributes": {"friendly_name": "Garage Door"},
+        "last_changed": "2026-07-01T18:05:00+00:00",
+    },
+    "fan.bedroom_fan": {
+        "entity_id": "fan.bedroom_fan",
+        "state": "off",
+        "attributes": {"friendly_name": "Bedroom Fan"},
+        "last_changed": "2026-07-01T22:30:00+00:00",
+    },
+    "media_player.living_room_speaker": {
+        "entity_id": "media_player.living_room_speaker",
+        "state": "idle",
+        "attributes": {"friendly_name": "Living Room Speaker"},
+        "last_changed": "2026-07-01T20:00:00+00:00",
+    },
+    "vacuum.robot_vacuum": {
+        "entity_id": "vacuum.robot_vacuum",
+        "state": "docked",
+        "attributes": {"friendly_name": "Robot Vacuum"},
+        "last_changed": "2026-07-01T10:00:00+00:00",
     },
 }
 
