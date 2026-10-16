@@ -73,3 +73,25 @@ def test_with_hidden_is_idempotent():
     once = models.with_hidden({"run-1"}, "run-2")
     assert once == {"run-1", "run-2"}
     assert models.with_hidden(once, "run-2") == once
+
+
+# -- the runs the bridge started (A5b) --
+
+
+def test_runs_path_is_a_join():
+    assert models.runs_path("data") == Path("data") / "bridge_runs.json"
+
+
+def test_parse_runs_is_lenient():
+    assert models.parse_runs("") == {}
+    assert models.parse_runs("{oops") == {}
+    assert models.parse_runs('["run-1"]') == {}
+    assert models.parse_runs('{"run-1": "front-door", "run-2": 3, "run-3": null}') == {
+        "run-1": "front-door"
+    }
+
+
+def test_render_runs_round_trips_sorted():
+    text = models.render_runs({"run-2": "b", "run-1": "a"})
+    assert text.endswith("\n") and list(json.loads(text)) == ["run-1", "run-2"]
+    assert models.parse_runs(text) == {"run-1": "a", "run-2": "b"}

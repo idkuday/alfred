@@ -587,10 +587,17 @@ class TestLifespan:
 
     @pytest.mark.asyncio
     async def test_missing_bridge_class_keeps_serving(self, lifespan_env, monkeypatch):
+        import sys
+
         import ai_server.omni_bridge as bridge_pkg
 
         monkeypatch.setattr(settings, "alfred_backend", "omni")
+        # Simulate a deployment where the bridge cannot be imported (omni missing): the package
+        # resolves AlfredOmni lazily from ``.client``, so make that import raise ImportError.
         monkeypatch.delattr(bridge_pkg, "AlfredOmni", raising=False)
+        monkeypatch.setitem(sys.modules, "ai_server.omni_bridge.client", None)
+        with pytest.raises(ImportError):
+            from ai_server.omni_bridge import AlfredOmni  # noqa: F401 - the premise holds
         async with main.lifespan(main.app):
             assert main.alfred_omni is None
 

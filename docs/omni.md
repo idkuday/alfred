@@ -84,6 +84,9 @@ Assistant writes are `physical` (ask every call), reads are `read`.
 > - **Handoff** (J10): a converse node that hears a different request exits `new-request`
 >   with the request as its output. `transcript.handoff_text` reads those words back from
 >   the ended run's `output_ref`; the client starts the next run with them.
+>   (Fixed in A5b.) Handoff suppression applies to the **reply** only: the words a terminal
+>   `new-request` speaker said stay in the transcript and in `earlier` (`speakers.Item.suppressed`
+>   is set for them; `spoken` skips them, `walk`/`transcript.build` keep them).
 > - **Listing**: `transcript.summarize` builds a `ConversationSummary` (title = first 60
 >   characters of `inputs.message`) from a run fold.
 > - **Hidden conversations** (`models.parse_hidden` / `render_hidden`): the file
@@ -116,8 +119,10 @@ Assistant writes are `physical` (ask every call), reads are `read`.
 >   words back, builds `earlier` from the ended run's transcript, starts the next run and
 >   returns its reply with the **new** `conversation_id`, `continued_from` = the old id and
 >   `new_conversation: true`; the old run's last words, if any, come first. At most one
->   automatic handoff per call. A terminal speaker that exits `new-request` is silent
->   (A4), which includes its earlier turns in that run's transcript.
+>   automatic handoff per call. A terminal speaker that exits `new-request` is silent in
+>   the reply (A4) so Alfred does not repeat himself, but (fixed in A5b) everything it and
+>   the earlier turns of that run said is in the `earlier` seed of the handoff run and of
+>   `continue_from`.
 > - **`continue_from(id, text)`** (J11): a new run with `inputs.earlier` = the old
 >   conversation's transcript (newest `omni_earlier_chars`), `continues` = the old id. The old
 >   id may be live, ended or from before a restart; unknown or hidden raises
@@ -142,7 +147,8 @@ Assistant writes are `physical` (ask every call), reads are `read`.
 > person's words, reasoning or tool-use blocks); a speaking tool contributes its output, or
 > `I couldn't do that — <reason, 200 characters>` when it failed (a call the person
 > refused or that timed out says `Okay, I didn't do that.`). A terminal speaker that exits
-> `new-request` is silent: the handoff's first reply is what the person hears. Pieces are
+> `new-request` is silent in the reply (the handoff's first reply is what the person hears;
+> fixed in A5b: its words are still in the transcript and the `earlier` seed). Pieces are
 > joined with a blank line (`speakers.compose_reply`); with nothing said and an ask pending,
 > the reply is the ask's question, and with both the question is appended. `speakers.spoken`
 > takes `since` (stream id -> last seq seen) so a reply holds only what was said after the
@@ -199,10 +205,12 @@ Assistant writes are `physical` (ask every call), reads are `read`.
 >   closes the client; the daemon and its runs are untouched. **`healthy()`** is a cheap
 >   `list_runs` that must answer within 5 s.
 > - **Connection.** With no `client_factory` the bridge uses
->   `omni.cli.connect.open_client(spawn=True)`. That module needs `prompt_toolkit` (the
->   kernel's `[cli]` extra); in a venv without it the bridge joins an **already running**
->   daemon through `omni.codec` instead (discovery file, probe, `NativeClient.connect`) and
->   raises `BridgeUnavailable` if there is none. There is no automatic reconnect: after a lost
+>   `omni.cli.connect.open_client(spawn=True)`, which starts the daemon if none runs
+>   (`prompt_toolkit`, the kernel's `[cli]` extra, is installed in Alfred's venv, so
+>   `omni.cli` imports and the J16 key path below works). Only in a venv without it does the
+>   bridge fall back to joining an **already running** daemon through `omni.codec`
+>   (discovery file, probe, `NativeClient.connect`), raising `BridgeUnavailable` if there is
+>   none. There is no automatic reconnect: after a lost
 >   connection calls raise `BridgeUnavailable` until the process restarts.
 > - **Jev key for a daemon the bridge starts (J16, secondary path).** If no daemon is running
 >   and `TYPESAFE_API_KEY` is not set, `start()` reads `settings.jev_key_file` through
@@ -217,16 +225,30 @@ Assistant writes are `physical` (ask every call), reads are `read`.
 
 ## Restart
 
-> **As built (omni-jev, A5).** On `start()` the bridge lists live `client:graph` runs
-> (`list_runs(module="client:graph")`). A run whose `definition_ref` is a front-door graph in
-> the library is re-adopted: a mirror is built from the journal and a `GraphHost` resumes it.
-> Its history is treated as already delivered, and a pending ask is re-rendered from the
-> journal, so the next message answers it. A run whose ref is **not** in the library (the
-> graph file, or a house setting that changes the injected constraints, changed since) is
-> cancelled with reason `graph changed` (J18); this includes any other `client:graph` run in
-> the same daemon, so do not run unrelated graphs from another client while Alfred restarts.
-> A subgraph's child run with a known ref is left to its parent's host. Ended conversations
-> need no adoption: listings and transcripts are rebuilt from the journal on demand.
+> **As built (omni-jev, A5; scope fixed in A5b).** The bridge keeps a record of the live runs
+> **it started**, `<data_dir>/bridge_runs.json` (`{run id: graph name}`, written next to
+> `hidden_conversations.json`; a missing or corrupt file means "started nothing"). On
+> `start()` it lists live `client:graph` runs (`list_runs(module="client:graph")`) and looks
+> **only** at the runs in that record; a run it did not start (another client's, or a
+> subgraph's child run) is never adopted, re-driven or cancelled. Per recorded run:
+>
+> - no longer live (or forgotten): pruned from the record;
+> - its history still fits the graph of the **same name** in the library: re-adopted. A mirror
+>   is built from the journal and a `GraphHost` resumes it. When the run's `definition_ref`
+>   is no longer in the library (the graph file, or a house setting that feeds constraint
+>   injection such as `omni_ask_timeout`, `omni_node_provider/model` or the repo path,
+>   changed: the ref is a content hash of the injected graph), the old ref is aliased to the
+>   same-name graph (and likewise for its subgraph runs, found through the `graph` nodes) so
+>   the policy can keep driving it. Its history is treated as already delivered, and a pending
+>   ask is re-rendered from the journal, so the next message answers it;
+> - the stored name is gone from the library, or the run entered a node the graph no longer
+>   has (or a `graph` node changed kind): cancelled with reason `graph changed` (J18) and
+>   pruned.
+>
+> The record gains a run when the bridge starts it (a new conversation or a handoff) and
+> loses it when the conversation ends, is forgotten or is cancelled. Runs started before the
+> record existed are not in it and are left alone. Ended conversations need no adoption:
+> listings and transcripts are rebuilt from the journal on demand.
 
 ## Smoke test
 

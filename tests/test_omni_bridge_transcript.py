@@ -90,6 +90,20 @@ def test_handoff_text_is_none_without_a_handoff():
     assert transcript.handoff_text(fold_run(s.run1), {}) is None
 
 
+def test_a_handoff_runs_transcript_keeps_what_alfred_said_last():
+    """A5b: handoff suppression is for the reply only; `earlier` must hold Alfred's words."""
+    s = Story().start().intake_asks().bye(spoken="Sure, switching.")
+    entries = _build(s)
+    assert [(e.role, e.text) for e in entries] == [
+        ("user", "the hallway sensor keeps going offline"),
+        ("assistant", "Is it the motion sensor by the front door?"),
+        ("assistant", "Sure, switching."),
+    ]
+    earlier = transcript.earlier_text(entries, 6000)
+    assert "assistant: Is it the motion sensor by the front door?" in earlier
+    assert earlier.endswith("assistant: Sure, switching.")
+
+
 def test_summarize_running_and_ended():
     s = Story("a" * 100).start().intake_asks()
     fold = fold_run(s.run1)

@@ -13,13 +13,17 @@ task A4).
 
 Hidden conversations (section 7.9): the file is a JSON list of run ids. Only the format lives
 here; reading and writing it, and cancelling the run, are the client's (A5).
+
+Started runs (A5b, J18): ``bridge_runs.json`` next to it is a JSON object ``{run id: graph
+name}`` of the live runs *this bridge started*. It is how a restart tells its own conversations
+from runs another client put in the same daemon, which it must never adopt, re-drive or cancel.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Literal
 
@@ -31,6 +35,9 @@ ConversationState = Literal["awaiting_user", "awaiting_approval", "working", "en
 
 #: Where hidden conversation ids are kept, relative to ``settings.data_dir`` (section 7.9).
 HIDDEN_FILENAME = "hidden_conversations.json"
+
+#: Where the runs the bridge started are kept, relative to ``settings.data_dir`` (A5b).
+RUNS_FILENAME = "bridge_runs.json"
 
 #: ``ConversationSummary.title`` is the first this-many characters of ``inputs.message``.
 TITLE_CHARS = 60
@@ -148,3 +155,36 @@ def render_hidden(ids: Iterable[str]) -> str:
 def with_hidden(current: Iterable[str], conversation_id: str) -> frozenset[str]:
     """``current`` plus ``conversation_id`` (idempotent)."""
     return frozenset(current) | {conversation_id}
+
+
+# ── runs the bridge started (A5b) ───────────────────────────────────────────
+
+
+def runs_path(data_dir: str | Path) -> Path:
+    """Where the started-runs record lives under ``data_dir`` (a join; no I/O)."""
+    return Path(data_dir) / RUNS_FILENAME
+
+
+def parse_runs(text: str) -> dict[str, str]:
+    """The ``{run id: graph name}`` pairs in a started-runs file's text.
+
+    Lenient like :func:`parse_hidden`: a missing, empty or corrupt file means "the bridge
+    started nothing", which makes a restart leave every run alone (the safe direction).
+    Entries that are not string -> string are dropped.
+    """
+    if not text.strip():
+        return {}
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        logger.warning("started-runs file is not valid JSON; treating as empty")
+        return {}
+    if not isinstance(data, dict):
+        logger.warning("started-runs file is not a JSON object; treating as empty")
+        return {}
+    return {k: v for k, v in data.items() if isinstance(k, str) and isinstance(v, str)}
+
+
+def render_runs(runs: Mapping[str, str]) -> str:
+    """The file text for ``runs``: a JSON object, keys sorted."""
+    return json.dumps(dict(sorted(runs.items())), indent=2) + "\n"

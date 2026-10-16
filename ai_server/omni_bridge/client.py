@@ -69,7 +69,10 @@ from .models import (
     Transcript,
     hidden_path,
     parse_hidden,
+    parse_runs,
     render_hidden,
+    render_runs,
+    runs_path,
     with_hidden,
 )
 
@@ -401,6 +404,10 @@ class AlfredOmni:
         self._policy: GraphPolicy | None = None
         self._convs: dict[str, _Conversation] = {}
         self._hidden: frozenset[str] = frozenset()
+        #: Live runs this bridge started -> the name of the graph it started them with
+        #: (``bridge_runs.json``, A5b). Restart only ever touches these.
+        self._started: dict[str, str] = {}
+        self._started_lock = asyncio.Lock()
         self._ended_folds: dict[str, RunFold] = {}
 
     # ── lifecycle ────────────────────────────────────────────────────────────
@@ -420,6 +427,7 @@ class AlfredOmni:
         self._front = front
         self._policy = GraphPolicy(self._library)
         self._hidden = await asyncio.to_thread(self._read_hidden)
+        self._started = await asyncio.to_thread(self._read_started)
         self._client = await self._connect()
         adopted = await self._readopt()
         logger.info("omni bridge started: %d graph(s), %d live conversation(s) re-adopted",
@@ -454,8 +462,8 @@ class AlfredOmni:
             try:
                 from omni.cli.connect import open_client
             except ImportError as exc:
-                # ``omni.cli`` needs prompt_toolkit (an extra Alfred's venv lacks): no
-                # find-or-spawn then, but a daemon that is already running can be joined.
+                # Alfred's venv has prompt_toolkit now, so this is only a fallback for a venv
+                # without the CLI extra: no find-or-spawn then, but a running daemon can be joined.
                 logger.info("omni.cli is unavailable (%s); joining a running daemon", exc.name)
                 return await _join_running_daemon()
             return await open_client(spawn=True)
@@ -497,23 +505,79 @@ class AlfredOmni:
     # ── re-adoption (J18) ────────────────────────────────────────────────────
 
     async def _readopt(self) -> int:
-        assert self._library is not None and self._front is not None
-        runs = await self._kcall(self._client.list_runs, module=GRAPH_MODULE, limit=1000)
+        """Re-adopt the live runs this bridge started; touch no other run (J18, A5b).
+
+        ``bridge_runs.json`` is the whole scope: another client's run in the same daemon, or a
+        subgraph's child run, is not in it and is left alone. A recorded run that is no longer
+        live is pruned from the record. For the rest, the graph the run started with may be
+        gone (its ref is a content hash, and the hash covers the injected house constraints),
+        so the graph of the **same name** drives it if the run's history still fits that graph
+        (``_heal``); otherwise the run is cancelled with reason ``graph changed``.
+        """
+        live = {
+            info.run_id
+            for info in await self._kcall(self._client.list_runs, module=GRAPH_MODULE, limit=1000)
+        }
+        kept: dict[str, str] = {}
         adopted: list[str] = []
-        for info in runs:
-            ref = info.definition_ref
-            if ref not in self._library:
-                logger.warning("run %s: graph changed (%s); cancelling", info.run_id, ref[:12])
+        for run_id, name in self._started.items():
+            if run_id not in live or run_id in self._hidden:
+                continue  # finished, forgotten or gone: nothing to adopt, prune the record
+            graph = self._graphs.get(name)
+            try:
+                fits = graph is not None and await self._heal(run_id, graph)
+            except (NotFoundError, ConversationNotFound):
+                continue  # vanished while we looked
+            if not fits:
+                logger.warning("run %s: graph %r changed; cancelling", run_id, name)
                 with contextlib.suppress(Exception):
-                    await self._client.cancel_run(info.run_id, "graph changed")
+                    await self._client.cancel_run(run_id, "graph changed")
                 continue
-            if self._library.resolve(ref).name != self._front.name:
-                continue  # a subgraph's child run: its front-door run's host adopts it
-            if info.run_id in self._hidden:
-                continue
-            adopted.append(info.run_id)
+            kept[run_id] = name
+            adopted.append(run_id)
+        if kept != self._started:
+            self._started = kept
+            await asyncio.to_thread(self._write_started, dict(kept))
         results = await asyncio.gather(*(self._adopt(r) for r in adopted), return_exceptions=True)
         return sum(1 for r in results if not isinstance(r, BaseException))
+
+    async def _heal(self, run_id: str, graph: Graph) -> bool:
+        """Whether ``run_id`` (and its subgraph runs) can be driven with the library as it is.
+
+        A run whose ``definition_ref`` still resolves needs nothing. One whose ref is gone is
+        pointed at ``graph`` (the same-name graph, ``library_mod.alias_ref``) provided every
+        node it has entered exists in ``graph``, a ``graph`` node still is one, and its
+        subgraph runs can be healed the same way against the subgraph that node now names.
+        Nothing is aliased unless the whole tree fits.
+        """
+        assert self._library is not None
+        envs = await self._peek_envs(run_id)
+        started = next((e.event for e in envs if isinstance(e.event, RunStarted)), None)
+        if started is None:
+            return False
+        stale = started.definition_ref not in self._library
+        current = graph if stale else self._library.resolve(started.definition_ref)
+        for env in envs:
+            event = env.event
+            if not isinstance(event, NodeEntered):
+                continue
+            node = current.node(event.node_id)
+            is_child = event.session_id.startswith("run-")
+            if node is None:
+                return False
+            if stale and (node.kind == "graph") != is_child:
+                return False
+            if node.kind != "graph" or not is_child:
+                continue
+            try:
+                child = self._library.resolve(node.graph or "")
+            except GraphError:
+                return False
+            if not await self._heal(event.session_id, child):
+                return False
+        if stale:
+            library_mod.alias_ref(self._library, started.definition_ref, graph)
+        return True
 
     async def _adopt(self, run_id: str) -> None:
         conv = await self._open(run_id)
@@ -618,6 +682,7 @@ class AlfredOmni:
             with contextlib.suppress(Exception):
                 await self._client.cancel_run(conversation_id, "forgotten")
             self._convs.pop(conversation_id, None)
+            await self._remember(conversation_id, None)
             await conv.close()
         elif not known:
             try:
@@ -636,7 +701,7 @@ class AlfredOmni:
         folds = mirror.folds()
         if folds[0].ended is not None:  # ended while nobody was waiting
             leftovers = self._pieces(conv)
-            self._retire(conv)
+            await self._retire(conv)
             await conv.close()
             return await self._begin(text, preface=leftovers)
         state = quiescence.state_of(folds, mirror.turns())
@@ -713,6 +778,7 @@ class AlfredOmni:
             self._front,
             {"message": text, "earlier": earlier, "continues": continues},
         )
+        await self._remember(info.run_id, self._front.name)
         conv = await self._open(info.run_id)
         async with conv.lock:
             reply = await self._collect(
@@ -847,7 +913,7 @@ class AlfredOmni:
         if conv.failure is not None and fold.ended is None:
             with contextlib.suppress(Exception):
                 await self._client.cancel_run(conv.run_id, "bridge error")
-        self._retire(conv)
+        await self._retire(conv)
         await conv.close()
         if not handoff:
             return reply
@@ -856,9 +922,10 @@ class AlfredOmni:
         joined = "\n\n".join(t for t in (reply.answer.strip(), nxt.answer.strip()) if t)
         return nxt.model_copy(update={"answer": joined, "continued_from": conv.run_id})
 
-    def _retire(self, conv: _Conversation) -> None:
+    async def _retire(self, conv: _Conversation) -> None:
         if self._convs.get(conv.run_id) is conv:
             del self._convs[conv.run_id]
+        await self._remember(conv.run_id, None)
 
     # ── reading old conversations ────────────────────────────────────────────
 
@@ -923,6 +990,10 @@ class AlfredOmni:
 
     async def _peek(self, run_id: str) -> RunFold:
         """Fold one run stream (no child runs, no sessions)."""
+        return fold_run(await self._peek_envs(run_id))
+
+    async def _peek_envs(self, run_id: str) -> list[Envelope]:
+        """The envelopes of one run stream, read to its head and detached again."""
         if not run_id.startswith("run-"):
             raise ConversationNotFound(run_id)
         try:
@@ -942,7 +1013,7 @@ class AlfredOmni:
         finally:
             with contextlib.suppress(Exception):
                 await stream.aclose()
-        return fold_run(envs)
+        return envs
 
     # ── plumbing ─────────────────────────────────────────────────────────────
 
@@ -967,11 +1038,34 @@ class AlfredOmni:
             return frozenset()
 
     def _write_hidden(self, ids: frozenset[str]) -> None:
-        path = hidden_path(self._settings.data_dir)
+        self._write_file(hidden_path(self._settings.data_dir), render_hidden(ids))
+
+    def _read_started(self) -> dict[str, str]:
+        path = runs_path(self._settings.data_dir)
+        try:
+            return parse_runs(path.read_text(encoding="utf-8"))
+        except OSError:
+            return {}
+
+    def _write_started(self, runs: Mapping[str, str]) -> None:
+        self._write_file(runs_path(self._settings.data_dir), render_runs(runs))
+
+    async def _remember(self, run_id: str, graph_name: str | None) -> None:
+        """Record a run this bridge started (``graph_name``), or drop it (``None``)."""
+        async with self._started_lock:
+            if graph_name is None:
+                if self._started.pop(run_id, None) is None:
+                    return
+            else:
+                self._started[run_id] = graph_name
+            await asyncio.to_thread(self._write_started, dict(self._started))
+
+    @staticmethod
+    def _write_file(path: Path, text: str) -> None:
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             tmp = path.with_name(path.name + ".tmp")
-            tmp.write_text(render_hidden(ids), encoding="utf-8")
+            tmp.write_text(text, encoding="utf-8")
             os.replace(tmp, path)
         except OSError:
             logger.warning("could not write %s", path, exc_info=True)

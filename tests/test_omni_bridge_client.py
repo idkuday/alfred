@@ -102,11 +102,31 @@ async def started(repo):
     await bridge.close()
 
 
-def lib_front_ref(repo) -> str:
+def lib_refs(repo, **updates) -> dict:
+    """graph name -> ref as the bridge would load them (``updates``: changed house settings)."""
     from ai_server.omni_bridge import library as library_mod
 
-    _, graphs = library_mod.load_library(repo, Settings().model_copy(update={}))
-    return graphs["front-door"].ref
+    _, graphs = library_mod.load_library(repo, Settings().model_copy(update=updates))
+    return {name: graph.ref for name, graph in graphs.items()}
+
+
+def lib_front_ref(repo) -> str:
+    return lib_refs(repo)["front-door"]
+
+
+STALE_REF = "0123abcd" * 8
+
+
+def record(repo, runs: dict) -> None:
+    """Write the bridge's own record of the runs it started (A5b)."""
+    path = repo / "data" / "bridge_runs.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(runs), encoding="utf-8")
+
+
+def recorded(repo) -> dict:
+    path = repo / "data" / "bridge_runs.json"
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
 
 
 # -- scripted behaviours of "the daemon" --
@@ -317,7 +337,9 @@ async def test_a_new_request_outcome_hands_off_to_a_new_run(started):
     second = k.started[1]["inputs"]
     assert second["message"] == "turn on the bedroom lamp" and second["continues"] == "run-1"
     assert "user: hi" in second["earlier"]
-    # A4 rule 4 suppresses a terminal speaker that exits new-request, earlier turns included
+    # A5b: rule 4 silences the reply only; what Alfred said in the old run is still in `earlier`
+    assert "assistant: What would you like to do?" in second["earlier"]
+    assert "assistant: Sure." in second["earlier"]
     assert "run-1" not in bridge._convs and "run-2" in bridge._convs
 
 
@@ -335,6 +357,108 @@ async def test_at_most_one_automatic_handoff_per_say(started):
     reply = await bridge.say("different topic", "run-1")
     assert len(k.started) == 2
     assert reply.state == "ended" and reply.conversation_id == "run-2"
+
+
+def troubleshoot_run(k: FakeKernel, run_id: str, repo) -> None:
+    """front -> troubleshoot (child run-2, mini-trouble) -> intake holds the floor."""
+    refs = lib_refs(repo)
+    child = "run-2"
+    k.add(run_id, NodeEntered(run_id, "front", ""))
+    k.add(run_id, NodeExited(run_id, "front", "troubleshoot"))
+    k.add(run_id, NodeEntered(run_id, "troubleshoot", child))
+    k.add(child, RunStarted(child, "client:graph", refs["mini-trouble"], {"report": "x"}))
+    k.runs = 2  # the child run id is taken; the next start_run is run-3
+    k.stream("sess-intake")
+    k.add(child, NodeEntered(child, "intake", "sess-intake"))
+    k.message("sess-intake", "user", "SEED: you are intake")
+    k.add("sess-intake", TurnStarted("t-seed", TurnCause.USER))
+    k.message("sess-intake", "assistant", "Is it the motion sensor by the front door?")
+    k.add("sess-intake", TurnEnded("t-seed", "end_turn", {}))
+    k.add(child, FloorHeld(child, "intake", "sess-intake"))
+
+
+def topic_change(k: FakeKernel, text: str, new_request: str) -> None:
+    """intake emits new-request, say-bye speaks and emits new-request, both runs end."""
+    k.message("sess-intake", "user", text)
+    k.add("sess-intake", TurnStarted("t-next", TurnCause.USER))
+    env = k.call("sess-intake", new_request, name="emit_outcome")
+    k.add("run-2", NodeExited("run-2", "intake", "new-request", f"sess-intake#{env.seq}"))
+    k.stream("sess-bye")
+    k.add("run-2", NodeEntered("run-2", "say-bye", "sess-bye"))
+    k.message("sess-bye", "assistant", "Sure, switching.")
+    env2 = k.call("sess-bye", new_request, name="emit_outcome")
+    k.add("run-2", NodeExited("run-2", "say-bye", "new-request", f"sess-bye#{env2.seq}"))
+    k.add("run-2", RunEnded("run-2", "completed"))
+    k.add("run-1", NodeExited("run-1", "troubleshoot", "new-request", f"sess-bye#{env2.seq}"))
+    k.add("run-1", RunEnded("run-1", "completed"))
+
+
+async def test_a_topic_change_seeds_the_new_run_with_both_sides_of_the_old_talk(started, repo):
+    """Plan 9.3: `earlier` holds the user's AND Alfred's lines; only the reply stays silent."""
+    bridge, k = started
+
+    def on_start(run_id, inputs):
+        if run_id == "run-1":
+            troubleshoot_run(k, run_id, repo)
+        else:
+            device_run(k, run_id)
+
+    k.on_start = on_start
+    first = await bridge.say("the hallway sensor keeps going offline", None)
+    assert first.state == "awaiting_user"
+    assert first.answer == "Is it the motion sensor by the front door?"
+    k.on_prompt = lambda sid, text: topic_change(
+        k, text, "turn on the bedroom lamp")
+    reply = await bridge.say("actually, forget that - turn on the bedroom lamp", "run-1")
+    assert reply.conversation_id == "run-3" and reply.continued_from == "run-1"
+    assert reply.new_conversation and reply.state == "awaiting_approval"
+    # say-bye's "Sure, switching." is not spoken: the handoff's first reply is all there is
+    assert reply.answer == "Shall I turn on Bedroom Lamp?"
+    seed = k.started[1]["inputs"]
+    assert seed["message"] == "turn on the bedroom lamp" and seed["continues"] == "run-1"
+    assert seed["earlier"].splitlines() == [
+        "user: the hallway sensor keeps going offline",
+        "assistant: Is it the motion sensor by the front door?",
+        "user: actually, forget that - turn on the bedroom lamp",
+        "assistant: Sure, switching.",
+    ]
+
+
+async def test_loading_an_earlier_conversation_that_handed_off_keeps_alfreds_words(
+    started, repo
+):
+    """Plan 9.4 + J11: continue_from seeds `earlier` with the whole transcript; /execute does not."""
+    bridge, k = started
+
+    def on_start(run_id, inputs):
+        if run_id == "run-1":
+            troubleshoot_run(k, run_id, repo)
+        elif run_id == "run-3":
+            device_run(k, run_id)  # the handed-off request waits on an ask
+        else:
+            chat_run(k, run_id, "Which sensor?")
+
+    k.on_start = on_start
+    await bridge.say("the hallway sensor keeps going offline", None)
+    # the topic change hands off to run-3, which is left parked on its ask
+    k.on_prompt = lambda sid, text: topic_change(k, text, "what is the weather")
+    await bridge.say("never mind, what is the weather", "run-1")
+    assert "run-1" not in bridge._convs
+    rows = await bridge.list_conversations()
+    assert {r.conversation_id: r.state for r in rows}["run-1"] == "ended"
+
+    reply = await bridge.continue_from("run-1", "it's offline again")
+    assert reply.continued_from == "run-1" and reply.new_conversation
+    seed = k.started[-1]["inputs"]
+    assert seed["message"] == "it's offline again" and seed["continues"] == "run-1"
+    assert "user: the hallway sensor keeps going offline" in seed["earlier"]
+    assert "assistant: Is it the motion sensor by the front door?" in seed["earlier"]
+    assert "assistant: Sure, switching." in seed["earlier"]
+
+    # the same words to /execute with the ended id: a fresh conversation, no seed (J11)
+    fresh = await bridge.say("it's offline again", "run-1")
+    assert fresh.new_conversation and fresh.continued_from is None
+    assert k.started[-1]["inputs"]["earlier"] == ""
 
 
 async def test_continue_from_seeds_the_new_run_with_the_old_transcript(started):
@@ -399,29 +523,32 @@ async def test_answer_ask_rejects_what_is_not_pending(started):
 # ── re-adoption (J18) ────────────────────────────────────────────────────────
 
 
-async def test_restart_readopts_live_runs_and_cancels_unknown_graphs(repo):
+async def test_restart_readopts_only_the_runs_it_started(repo):
     k = FakeKernel()
-    ref = lib_front_ref(repo)
+    refs = lib_refs(repo)
     inputs = {"message": "hi", "earlier": "", "continues": ""}
-    # a live conversation parked on a held floor
-    k.add("run-1", RunStarted("run-1", "client:graph", ref, inputs))
+    # run-1: ours, live, parked on a held floor
+    k.add("run-1", RunStarted("run-1", "client:graph", refs["front-door"], inputs))
     chat_run(k, "run-1", "Hello again.")
-    # a conversation whose graph was edited since
-    k.add("run-2", RunStarted("run-2", "client:graph", "0123abcd" * 8, inputs))
-    # a subgraph's child run: left to its parent's host
-    child_ref = GraphLibrary()  # noqa: F841 - just to show intent; the ref is resolved below
-    from ai_server.omni_bridge import library as library_mod
-
-    lib, _ = library_mod.load_library(repo, Settings().model_copy(update={}))
-    k.add("run-3", RunStarted("run-3", "client:graph", lib.resolve("mini-trouble").ref,
-                              {"report": "x"}))
-    k.runs = 3
+    # run-2: another client's run on a graph we do not know -> NOT ours to cancel (A5b)
+    k.add("run-2", RunStarted("run-2", "client:graph", STALE_REF, inputs))
+    # run-3: another client running our front-door graph -> NOT ours to adopt
+    k.add("run-3", RunStarted("run-3", "client:graph", refs["front-door"], inputs))
+    k.add("run-3", NodeEntered("run-3", "front", ""))
+    # run-4: a subgraph run -> left to its parent's host
+    k.add("run-4", RunStarted("run-4", "client:graph", refs["mini-trouble"], {"report": "x"}))
+    # run-5: ours once, finished since -> pruned from the record
+    k.add("run-5", RunStarted("run-5", "client:graph", refs["front-door"], inputs))
+    k.add("run-5", RunEnded("run-5", "completed"))
+    k.runs = 5
+    record(repo, {"run-1": "front-door", "run-5": "front-door"})
     bridge = make(repo, k)
     await bridge.start()
     try:
-        assert k.cancelled == [("run-2", "graph changed")]
+        assert k.cancelled == []
         assert set(bridge._convs) == {"run-1"}
         assert FakeHost.instances[0].driven == ["run-1"]
+        assert recorded(repo) == {"run-1": "front-door"}
         # the history was seen before the restart as far as anyone can tell: no repeat
         k.on_prompt = lambda sid, text: chat_reply(k, text, "Back with you.")
         reply = await bridge.say("are you there?", "run-1")
@@ -431,6 +558,123 @@ async def test_restart_readopts_live_runs_and_cancels_unknown_graphs(repo):
         await bridge.close()
 
 
+async def test_without_a_record_nothing_is_adopted_or_cancelled(repo):
+    k = FakeKernel()
+    refs = lib_refs(repo)
+    inputs = {"message": "hi", "earlier": "", "continues": ""}
+    k.add("run-1", RunStarted("run-1", "client:graph", refs["front-door"], inputs))
+    chat_run(k, "run-1")
+    k.add("run-2", RunStarted("run-2", "client:graph", STALE_REF, inputs))
+    k.runs = 2
+    (repo / "data").mkdir()
+    (repo / "data" / "bridge_runs.json").write_text("{not json", encoding="utf-8")
+    bridge = make(repo, k)
+    await bridge.start()
+    try:
+        assert k.cancelled == [] and bridge._convs == {}
+    finally:
+        await bridge.close()
+
+
+async def test_a_changed_setting_re_drives_our_run_with_the_graph_of_the_same_name(repo):
+    """The ref is a content hash that covers the injected constraints (A5, J18)."""
+    k = FakeKernel()
+    old = lib_refs(repo, omni_ask_timeout=7.0)  # what the run was started with
+    assert old["front-door"] != lib_refs(repo)["front-door"]
+    inputs = {"message": "hi", "earlier": "", "continues": ""}
+    k.add("run-1", RunStarted("run-1", "client:graph", old["front-door"], inputs))
+    chat_run(k, "run-1", "Hello again.")
+    k.runs = 1
+    record(repo, {"run-1": "front-door"})
+    bridge = make(repo, k)
+    await bridge.start()
+    try:
+        assert k.cancelled == []
+        assert set(bridge._convs) == {"run-1"}
+        # the policy can now resolve the run's old ref to the graph of the same name
+        assert bridge._library.resolve(old["front-door"]) is bridge._graphs["front-door"]
+        assert recorded(repo) == {"run-1": "front-door"}
+        k.on_prompt = lambda sid, text: chat_reply(k, text, "Still here.")
+        assert (await bridge.say("hello?", "run-1")).answer == "Still here."
+    finally:
+        await bridge.close()
+
+
+async def test_a_changed_setting_also_heals_the_subgraph_run(repo):
+    k = FakeKernel()
+    old = lib_refs(repo, omni_ask_timeout=7.0)
+    inputs = {"message": "sensor", "earlier": "", "continues": ""}
+    k.add("run-1", RunStarted("run-1", "client:graph", old["front-door"], inputs))
+    k.add("run-1", NodeEntered("run-1", "front", ""))
+    k.add("run-1", NodeExited("run-1", "front", "troubleshoot"))
+    k.add("run-1", NodeEntered("run-1", "troubleshoot", "run-2"))
+    k.add("run-2", RunStarted("run-2", "client:graph", old["mini-trouble"], {"report": "x"}))
+    k.runs = 2
+    record(repo, {"run-1": "front-door"})  # run-2 is the host's own child run: not recorded
+    bridge = make(repo, k)
+    await bridge.start()
+    try:
+        assert k.cancelled == [] and set(bridge._convs) == {"run-1"}
+        assert bridge._library.resolve(old["mini-trouble"]) is bridge._graphs["mini-trouble"]
+        assert FakeHost.instances[0].driven == ["run-1"]  # the child is the host's to adopt
+    finally:
+        await bridge.close()
+
+
+async def test_our_run_is_cancelled_when_its_graph_name_is_gone_or_no_longer_fits(repo):
+    k = FakeKernel()
+    old = lib_refs(repo, omni_ask_timeout=7.0)
+    inputs = {"message": "hi", "earlier": "", "continues": ""}
+    # run-1: recorded under a name the library no longer has
+    k.add("run-1", RunStarted("run-1", "client:graph", STALE_REF, inputs))
+    # run-2: same name, but it entered a node the graph has since lost
+    k.add("run-2", RunStarted("run-2", "client:graph", old["front-door"], inputs))
+    k.add("run-2", NodeEntered("run-2", "old-node", "sess-x"))
+    # run-3: a node that was an agent session is now a graph node
+    k.add("run-3", RunStarted("run-3", "client:graph", old["front-door"], inputs))
+    k.add("run-3", NodeEntered("run-3", "troubleshoot", "sess-y"))
+    # run-4: untouched foreign run, as ever
+    k.add("run-4", RunStarted("run-4", "client:graph", STALE_REF, inputs))
+    k.runs = 4
+    record(repo, {"run-1": "retired-graph", "run-2": "front-door", "run-3": "front-door"})
+    bridge = make(repo, k)
+    await bridge.start()
+    try:
+        assert sorted(k.cancelled) == [
+            ("run-1", "graph changed"), ("run-2", "graph changed"), ("run-3", "graph changed")]
+        assert bridge._convs == {} and recorded(repo) == {}
+        assert old["front-door"] not in bridge._library  # nothing was aliased for the misfits
+    finally:
+        await bridge.close()
+
+
+# ── the record of runs this bridge starts (A5b) ──────────────────────────────
+
+
+async def test_started_runs_are_recorded_and_dropped_when_they_end(started, repo):
+    bridge, k = started
+    k.on_start = lambda run_id, inputs: device_run(k, run_id)
+    k.on_respond = lambda stream, req, decision: device_answer(k, stream, req, decision)
+    bridge._decide = Decider(("allow", 0.9))
+    await bridge.say("turn on the bedroom lamp", None)
+    assert recorded(repo) == {"run-1": "front-door"}
+    await bridge.say("yes", "run-1")  # ended
+    assert recorded(repo) == {}
+
+
+async def test_a_handoff_moves_the_record_to_the_new_run_and_forget_drops_it(started, repo):
+    bridge, k = started
+    k.on_start = lambda run_id, inputs: (
+        chat_run(k, run_id) if run_id == "run-1" else device_run(k, run_id))
+    await bridge.say("hi", None)
+    assert recorded(repo) == {"run-1": "front-door"}
+    k.on_prompt = lambda sid, text: handoff(k, "run-1", "turn on the bedroom lamp")
+    await bridge.say("different topic", "run-1")
+    assert recorded(repo) == {"run-2": "front-door"}
+    assert await bridge.forget("run-2") is True
+    assert recorded(repo) == {}
+
+
 async def test_restart_resurfaces_a_pending_ask(repo):
     k = FakeKernel()
     ref = lib_front_ref(repo)
@@ -438,6 +682,7 @@ async def test_restart_resurfaces_a_pending_ask(repo):
                               {"message": "lamp", "earlier": "", "continues": ""}))
     device_run(k, "run-1")
     k.runs = 1
+    record(repo, {"run-1": "front-door"})
     bridge = make(repo, k, decide=Decider(("allow", 0.9)))
     k.on_respond = lambda stream, req, decision: device_answer(k, stream, req, decision)
     await bridge.start()
