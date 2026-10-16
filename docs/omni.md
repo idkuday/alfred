@@ -252,8 +252,49 @@ Assistant writes are `physical` (ask every call), reads are `read`.
 
 ## Smoke test
 
-> **Planned (omni-jev, A7).** `python -m ai_server.omni_bridge.smoke` drives a device
-> command, a handoff and a continue against the mock Home Assistant.
+> **As built (omni-jev, A7).** `ai_server/omni_bridge/smoke.py` drives plan sections 9.1 to 9.4
+> through a real omni daemon and the real `front-door` graph, with Alfred's Home Assistant MCP
+> server pointed at the **mock** Home Assistant (no real house). Run from the repo root:
+>
+> ```
+> C:\Users\udayr\Documents\Projects\alfred\.venv\Scripts\python.exe -m ai_server.omni_bridge.smoke --dry-run
+> C:\Users\udayr\Documents\Projects\alfred\.venv\Scripts\python.exe -m ai_server.omni_bridge.smoke
+> C:\Users\udayr\Documents\Projects\alfred\.venv\Scripts\python.exe -m ai_server.omni_bridge.smoke --jev --jev-key-file C:\Users\udayr\Documents\Projects\alfred\jev.env
+> ```
+>
+> * `--dry-run` needs no secrets and makes no model call: it loads the graph library and checks the
+>   house constraints were injected, writes `.omni/mcp.local.json` with the mock's `HA_URL`,
+>   starts the mock, starts a daemon and connects, starts the Home Assistant MCP server from the
+>   generated file and lists the mock's entities, then stops everything.
+> * The second command is the full run on the LLM path: decide nodes fall back to the chat model.
+>   It needs the node LLM's key (`provider`/`model` come from `.omni/alfred/agent.yml`, or
+>   `OMNI_NODE_PROVIDER`/`OMNI_NODE_MODEL`; the script prints which, and exits 2 with a message
+>   instead of hanging if that provider has no key).
+> * `--jev` uses real Jev for decide nodes. The key file is only a *path* to the script: the
+>   bridge's J16 path reads it through `KeyFileCredential` and puts it in the environment of the
+>   daemon it spawns. Nothing is printed. In a worktree pass the main checkout's `jev.env`
+>   (`--jev-key-file`), since a worktree has none. Without `--jev` the script removes
+>   `TYPESAFE_API_KEY` from its environment and points the key setting at a missing file.
+> * `--only 9.1` runs one scenario (prerequisites are added: 9.3 needs 9.2, 9.4 needs 9.2 and 9.3).
+>   `--timeout` (default 900 s) is a hard overall limit; `--turn-timeout` bounds one bridge call.
+>   `--shared-daemon` uses your normal daemon instead of a private one.
+>
+> The daemon is **isolated**: the script sets `OMNI_HOME` and the journal location
+> (`LOCALAPPDATA` / `XDG_STATE_HOME`) to a temp directory before connecting, so your own daemon,
+> journal and conversations are untouched (provider config still comes from `~/.omni/providers`).
+> The daemon is stopped and the temp directory removed on every exit path, and `mcp.local.json`
+> is regenerated clean.
+>
+> Scenarios: **9.1** "turn on the bedroom lamp" then an automatic yes (words through Jev with
+> `--jev`, otherwise `answer_ask(allow)`), checking no chat node ran and the mock's lamp is on;
+> **9.2** "the hallway sensor keeps going offline" reaches the intake (`awaiting_user`);
+> **9.3** "actually, forget that - turn on the coffee maker" hands off to a new conversation
+> (`continued_from`, `new_conversation`), which is then refused (the mock stays off);
+> **9.4** the first conversation is listed `ended`, its transcript is readable, and
+> `continue_from` starts a new run whose `inputs.earlier` carries it. Each prints PASS or FAIL,
+> the reply text, the path from the journal (node ids, `Decided` choice with confidence,
+> provider/model and latency, tool calls) and the latency. Exit status: 0 pass, 1 a scenario
+> failed, 2 a precondition is missing, 3 the overall timeout fired.
 
 ## Secrets
 
