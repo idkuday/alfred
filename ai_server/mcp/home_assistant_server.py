@@ -30,6 +30,18 @@ bare ``entity_id`` to show a human before the action runs. See the module
 docstring on grading below for why this is the only lever available on the
 server side.
 
+The LLM-free device path (omni-jev plan, J4, section 6.2)
+------------------------------------------------------------
+``resolve_entity`` (read) -> ``apply`` (physical) / ``describe`` (read) let a
+graph act on "turn on the bedroom lamp" without an LLM agent. ``resolve_entity``
+narrows Home Assistant's devices to the ones that support the action and, when
+more than one remains, asks Jev through :mod:`ai_server.decisions` (J5). Its
+result is a JSON object ``{"outcome": ..., "output": {...}}`` that the kernel's
+tool-outcome routing reads. A tool node's output cannot be indexed, so the
+resolved ``output`` is passed **whole** as the ``target`` string of ``apply`` /
+``describe``, which parse it. The permission prompt for ``apply`` therefore
+shows the resolved device's ``entity_name``.
+
 A note on ``Grade.PHYSICAL`` — read before assuming this is graded correctly
 ------------------------------------------------------------------------------
 The task this server was built against says a physical capability should be
@@ -54,11 +66,13 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+from datetime import datetime
 from typing import Any
 
+from .. import decisions
 from ..config import settings
 from ..integration.home_assistant import HomeAssistantIntegration
-from ..models import Action, Command
+from ..models import Action, Command, DeviceInfo
 from .jsonrpc import McpStdioServer, ToolCallResult, ToolSpec
 
 logger = logging.getLogger(__name__)
@@ -67,6 +81,23 @@ SERVER_NAME = "alfred-home-assistant"
 SERVER_VERSION = "1.0.0"
 
 _KNOWN_DOMAINS = ("light", "switch", "fan", "climate", "cover")
+
+#: What ``resolve_entity`` may be asked to do (omni-jev plan, section 6.2).
+_RESOLVE_ACTIONS = ("turn-on", "turn-off", "toggle", "status")
+
+#: ``status`` can also read these (a motion sensor or lock has a state worth
+#: asking about even though it cannot be switched).
+_STATUS_EXTRA_DOMAINS = ("sensor", "binary_sensor", "lock")
+
+#: The state-changing ``resolve_entity`` actions ``apply`` accepts.
+_APPLY_ACTIONS: dict[str, Action] = {
+    "turn-on": Action.TURN_ON,
+    "turn-off": Action.TURN_OFF,
+    "toggle": Action.TOGGLE,
+}
+
+#: How many entity ids an ``ambiguous`` outcome lists for the fallback agent.
+_AMBIGUOUS_CANDIDATES = 5
 
 
 def _entity_property(example: str) -> dict[str, Any]:
@@ -103,6 +134,91 @@ def _command_result(resp: Any) -> ToolCallResult:
     if resp.device_state is not None:
         payload["device_state"] = resp.device_state
     return ToolCallResult(content_text=json.dumps(payload, default=str))
+
+
+def _json_result(outcome: str, output: dict[str, Any]) -> ToolCallResult:
+    """The kernel's tool-outcome shape: ``{"outcome": ..., "output": ...}``."""
+    return ToolCallResult(content_text=json.dumps({"outcome": outcome, "output": output}))
+
+
+def _resolved_output(device: DeviceInfo, confidence: float) -> dict[str, Any]:
+    return {
+        "entity_id": device.entity_id,
+        "entity_name": device.name,
+        "domain": device.device_type,
+        "confidence": round(confidence, 3),
+    }
+
+
+def _parse_target(args: Any) -> tuple[dict[str, str] | None, str | None]:
+    """Parse the ``target`` string ``resolve_entity`` produced.
+
+    Returns ``(target, None)`` with ``entity_id`` and ``entity_name`` strings, or
+    ``(None, reason)``.
+    """
+    raw = args.get("target")
+    if not isinstance(raw, str) or not raw.strip():
+        return None, "target must be the JSON string resolve_entity produced"
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        return None, "target is not valid JSON"
+    if not isinstance(parsed, dict):
+        return None, "target must be a JSON object"
+    entity_id, entity_name = parsed.get("entity_id"), parsed.get("entity_name")
+    if not isinstance(entity_id, str) or "." not in entity_id:
+        return None, "target has no valid entity_id"
+    if not isinstance(entity_name, str) or not entity_name.strip():
+        return None, "target has no entity_name"
+    return {"entity_id": entity_id, "entity_name": entity_name}, None
+
+
+def _clock(value: Any) -> str | None:
+    """``value`` (an ISO timestamp) as local ``HH:MM``; the raw text if unparsable."""
+    if not value:
+        return None
+    text = str(value)
+    try:
+        return datetime.fromisoformat(text).astimezone().strftime("%H:%M")
+    except ValueError:
+        return text
+
+
+async def _candidates(ha: HomeAssistantIntegration, action: str) -> list[DeviceInfo]:
+    """Devices that support ``action``: the integration's own domains, plus
+    sensors and locks when the action is ``status``."""
+    if action != "status":
+        devices = await ha.discover_devices()
+        return [d for d in devices if d.device_type in _KNOWN_DOMAINS]
+    domains = _KNOWN_DOMAINS + _STATUS_EXTRA_DOMAINS
+    try:
+        # ``discover_devices`` is hard-wired to _KNOWN_DOMAINS, and the integration
+        # is not edited for this task, so ``status`` reads the state list itself.
+        session = await ha._get_session()
+        async with session.get("/api/states") as response:
+            if response.status != 200:
+                logger.error("Home Assistant state list failed: %s", response.status)
+                return []
+            states = await response.json()
+    except Exception as exc:
+        logger.error("Home Assistant state list failed: %s", type(exc).__name__)
+        return []
+    out: list[DeviceInfo] = []
+    for state in states:
+        entity_id = str(state.get("entity_id", ""))
+        domain = entity_id.split(".")[0] if "." in entity_id else ""
+        if domain in domains:
+            attributes = state.get("attributes", {})
+            out.append(
+                DeviceInfo(
+                    entity_id=entity_id,
+                    name=attributes.get("friendly_name", entity_id),
+                    device_type=domain,
+                    state=state.get("state"),
+                    attributes=attributes,
+                )
+            )
+    return out
 
 
 def build_tools(ha: HomeAssistantIntegration) -> list[ToolSpec]:
@@ -202,6 +318,78 @@ def build_tools(ha: HomeAssistantIntegration) -> list[ToolSpec]:
             content_text=json.dumps({"healthy": healthy}),
             is_error=not healthy,
         )
+
+    async def _resolve_entity(args: dict) -> ToolCallResult:
+        request = str(args.get("request", ""))
+        action = str(args.get("action", ""))
+        if action not in _RESOLVE_ACTIONS:
+            return ToolCallResult(
+                content_text=f"action must be one of {', '.join(_RESOLVE_ACTIONS)}",
+                is_error=True,
+            )
+        devices = await _candidates(ha, action)
+        if not devices:
+            return _json_result("none", {"reason": "no matching devices"})
+        if len(devices) == 1:
+            return _json_result("resolved", _resolved_output(devices[0], 1.0))
+        first_few = [d.entity_id for d in devices[:_AMBIGUOUS_CANDIDATES]]
+        if len(devices) > settings.resolve_max_candidates:
+            return _json_result(
+                "ambiguous", {"reason": "too many devices", "candidates": first_few}
+            )
+        options = {
+            d.entity_id: f"{d.name} — {d.device_type}, currently {d.state}"
+            for d in devices
+        }
+        answer, confidence = await decisions.choose(
+            "Which device does the person mean?",
+            options,
+            {"request": request},
+            threshold=settings.resolve_threshold,
+        )
+        chosen = next((d for d in devices if d.entity_id == answer), None)
+        if chosen is None:
+            return _json_result(
+                "ambiguous", {"reason": "no confident match", "candidates": first_few}
+            )
+        return _json_result("resolved", _resolved_output(chosen, confidence))
+
+    async def _apply(args: dict) -> ToolCallResult:
+        action = str(args.get("action", ""))
+        if action not in _APPLY_ACTIONS:
+            return ToolCallResult(
+                content_text=f"action must be one of {', '.join(_APPLY_ACTIONS)}",
+                is_error=True,
+            )
+        target, problem = _parse_target(args)
+        if target is None:
+            return ToolCallResult(content_text=problem or "bad target", is_error=True)
+        command = Command(action=_APPLY_ACTIONS[action], target=target["entity_id"])
+        resp = await ha.execute_command(command)
+        if resp.status == "error":
+            return ToolCallResult(content_text=resp.error or "unknown error", is_error=True)
+        state = (resp.device_state or {}).get("state")
+        if state is None:
+            return ToolCallResult(
+                content_text=f"could not read back the state of {target['entity_name']}",
+                is_error=True,
+            )
+        return ToolCallResult(content_text=f"{target['entity_name']} is {state}.")
+
+    async def _describe(args: dict) -> ToolCallResult:
+        target, problem = _parse_target(args)
+        if target is None:
+            return ToolCallResult(content_text=problem or "bad target", is_error=True)
+        info = await ha.get_device_info(target["entity_id"])
+        if info is None:
+            return ToolCallResult(
+                content_text=f"entity {target['entity_id']!r} not found", is_error=True
+            )
+        sentence = f"{target['entity_name']} is {info.state}"
+        changed = _clock((info.attributes or {}).get("last_changed"))
+        if changed:
+            sentence += f" (last changed {changed})"
+        return ToolCallResult(content_text=sentence + ".")
 
     return [
         ToolSpec(
@@ -360,6 +548,96 @@ def build_tools(ha: HomeAssistantIntegration) -> list[ToolSpec]:
             input_schema={"type": "object", "properties": {}, "required": []},
             handler=_health_check,
         ),
+        ToolSpec(
+            name="resolve_entity",
+            description=(
+                "Read-only. Work out WHICH Home Assistant device a person "
+                "means by their words, for one of the actions turn-on, "
+                "turn-off, toggle or status. Returns a JSON object "
+                '{"outcome": "resolved" | "ambiguous" | "none", "output": {...}}. '
+                'On "resolved" the output holds entity_id, entity_name, domain '
+                "and confidence; pass that whole output, as a string, to apply "
+                "or describe as their 'target'. Makes no change to anything."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "request": {
+                        "type": "string",
+                        "description": "The person's words, e.g. 'turn on the bedroom lamp'.",
+                    },
+                    "action": {
+                        "type": "string",
+                        "enum": list(_RESOLVE_ACTIONS),
+                        "description": "What the person wants done to the device.",
+                    },
+                },
+                "required": ["request", "action"],
+            },
+            handler=_resolve_entity,
+        ),
+        ToolSpec(
+            name="apply",
+            description=(
+                "Physically turn a Home Assistant device ON or OFF, or TOGGLE "
+                "it. 'target' is the JSON string resolve_entity produced as "
+                "its output; it names the device (entity_id and entity_name), "
+                "and the entity_name is what a human sees when asked to "
+                "approve this call. Sends a real command to Home Assistant "
+                "with an immediate real-world effect. Returns one sentence "
+                "such as 'Bedroom Lamp is on.'"
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": list(_APPLY_ACTIONS),
+                        "description": "What to do to the device.",
+                    },
+                    "target": {
+                        "type": "string",
+                        "description": (
+                            "The JSON string resolve_entity produced as its "
+                            "output: an object with entity_id and entity_name "
+                            "(the human-readable device name shown to whoever "
+                            "approves this call), e.g. "
+                            '\'{"entity_id": "light.bedroom_lamp", '
+                            '"entity_name": "Bedroom Lamp"}\'.'
+                        ),
+                    },
+                    "request": {
+                        "type": "string",
+                        "description": "The person's original words, for the record.",
+                    },
+                },
+                "required": ["action", "target", "request"],
+            },
+            handler=_apply,
+        ),
+        ToolSpec(
+            name="describe",
+            description=(
+                "Read-only. Say in one sentence what state a device is in, "
+                "e.g. 'Bedroom Lamp is off (last changed 14:02).' 'target' is "
+                "the JSON string resolve_entity produced as its output. Makes "
+                "no change to anything."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": (
+                            "The JSON string resolve_entity produced as its "
+                            "output: an object with entity_id and entity_name."
+                        ),
+                    }
+                },
+                "required": ["target"],
+            },
+            handler=_describe,
+        ),
     ]
 
 
@@ -377,7 +655,10 @@ def main() -> None:
     )
     args = parser.parse_args()
     logging.getLogger().setLevel(args.log_level)
-    build_server().run()
+    try:
+        build_server().run()
+    finally:
+        decisions.close()
 
 
 if __name__ == "__main__":

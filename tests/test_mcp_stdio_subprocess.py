@@ -115,6 +115,9 @@ def test_home_assistant_server_discovers_and_lists_tools(ha_client):
         "get_state",
         "list_entities",
         "health_check",
+        "resolve_entity",
+        "apply",
+        "describe",
     }
     turn_on = next(t for t in listed["tools"] if t["name"] == "turn_on")
     assert "entity_id" in turn_on["inputSchema"]["required"]
