@@ -66,6 +66,13 @@ Assistant writes are `physical` (ask every call), reads are `read`.
 > | `apply` | physical | `action` (`turn-on`, `turn-off`, `toggle`), `target`, `request` | one sentence, `Bedroom Lamp is on.`; errors are `isError` results |
 > | `describe` | read | `target` | one sentence, `Bedroom Lamp is off (last changed 14:02).` |
 >
+> `list_entities` (fixed in A2b) lists `light`, `switch`, `fan`, `climate`, `cover`, `sensor`,
+> `binary_sensor`, `lock`, `media_player` and `vacuum`, each with `entity_id`, `name`,
+> `device_type` and `state`. Before A2b it listed only the first five, so the agent could not
+> see any sensor. The optional `domain` argument filters to one of those domains, and an
+> unlisted domain gives an empty list. If Home Assistant cannot be read, the tool is an error
+> result, not an empty list.
+>
 > `resolve_entity` lists the devices that support the action (`status` also looks at
 > `sensor`, `binary_sensor` and `lock`). No candidates: `none` (`reason: no matching devices`).
 > Exactly one: `resolved` with confidence 1.0, no model call. More than

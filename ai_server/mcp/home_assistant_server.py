@@ -89,6 +89,12 @@ _RESOLVE_ACTIONS = ("turn-on", "turn-off", "toggle", "status")
 #: asking about even though it cannot be switched).
 _STATUS_EXTRA_DOMAINS = ("sensor", "binary_sensor", "lock")
 
+#: What ``list_entities`` reports (A2b): the integration's own domains plus
+#: sensors, locks, media players and vacuums. Before A2b it listed only
+#: ``_KNOWN_DOMAINS``, so the agent could not see any sensor and said so.
+_LIST_EXTRA_DOMAINS = ("sensor", "binary_sensor", "lock", "media_player", "vacuum")
+_LISTABLE_DOMAINS = _KNOWN_DOMAINS + _LIST_EXTRA_DOMAINS
+
 #: The state-changing ``resolve_entity`` actions ``apply`` accepts.
 _APPLY_ACTIONS: dict[str, Action] = {
     "turn-on": Action.TURN_ON,
@@ -184,25 +190,26 @@ def _clock(value: Any) -> str | None:
         return text
 
 
-async def _candidates(ha: HomeAssistantIntegration, action: str) -> list[DeviceInfo]:
-    """Devices that support ``action``: the integration's own domains, plus
-    sensors and locks when the action is ``status``."""
-    if action != "status":
-        devices = await ha.discover_devices()
-        return [d for d in devices if d.device_type in _KNOWN_DOMAINS]
-    domains = _KNOWN_DOMAINS + _STATUS_EXTRA_DOMAINS
+async def _state_devices(
+    ha: HomeAssistantIntegration, domains: tuple[str, ...]
+) -> list[DeviceInfo] | None:
+    """The entities in ``domains`` from Home Assistant's state list, or ``None``
+    when Home Assistant could not be read (so callers can tell "none exposed"
+    from "unreachable").
+
+    ``discover_devices`` is hard-wired to the integration's own domains, and the
+    integration is not edited for this work, so this reads ``/api/states`` itself.
+    """
     try:
-        # ``discover_devices`` is hard-wired to _KNOWN_DOMAINS, and the integration
-        # is not edited for this task, so ``status`` reads the state list itself.
         session = await ha._get_session()
         async with session.get("/api/states") as response:
             if response.status != 200:
                 logger.error("Home Assistant state list failed: %s", response.status)
-                return []
+                return None
             states = await response.json()
     except Exception as exc:
         logger.error("Home Assistant state list failed: %s", type(exc).__name__)
-        return []
+        return None
     out: list[DeviceInfo] = []
     for state in states:
         entity_id = str(state.get("entity_id", ""))
@@ -219,6 +226,16 @@ async def _candidates(ha: HomeAssistantIntegration, action: str) -> list[DeviceI
                 )
             )
     return out
+
+
+async def _candidates(ha: HomeAssistantIntegration, action: str) -> list[DeviceInfo]:
+    """Devices that support ``action``: the integration's own domains, plus
+    sensors and locks when the action is ``status``."""
+    if action != "status":
+        devices = await ha.discover_devices()
+        return [d for d in devices if d.device_type in _KNOWN_DOMAINS]
+    found = await _state_devices(ha, _KNOWN_DOMAINS + _STATUS_EXTRA_DOMAINS)
+    return found or []
 
 
 def build_tools(ha: HomeAssistantIntegration) -> list[ToolSpec]:
@@ -298,7 +315,12 @@ def build_tools(ha: HomeAssistantIntegration) -> list[ToolSpec]:
 
     async def _list_entities(args: dict) -> ToolCallResult:
         domain = args.get("domain")
-        devices = await ha.discover_devices()
+        devices = await _state_devices(ha, _LISTABLE_DOMAINS)
+        if devices is None:
+            return ToolCallResult(
+                content_text="could not read the entity list from Home Assistant",
+                is_error=True,
+            )
         if domain:
             devices = [d for d in devices if d.device_type == domain]
         payload = [
@@ -519,20 +541,29 @@ def build_tools(ha: HomeAssistantIntegration) -> list[ToolSpec]:
         ToolSpec(
             name="list_entities",
             description=(
-                "Read-only. List the Home Assistant devices Alfred can see "
-                "— lights, switches, fans, climate entities, and covers — "
-                "with each one's entity_id, friendly name, and current "
-                "state. Optionally filter to one domain. Makes no change to "
-                "anything; useful before calling a state-changing tool to "
-                "find the right entity_id."
+                "Read-only. List the Home Assistant entities Alfred can see: "
+                "lights, switches, fans, covers, climate entities, sensors, "
+                "binary sensors (motion, door and window contacts and the "
+                "like), locks, media players and vacuums. Each item gives the "
+                "entity_id, friendly name, device_type (the domain, e.g. "
+                "'sensor') and current state. Optionally filter to one domain "
+                "with the 'domain' argument, e.g. domain='sensor' for every "
+                "sensor; a house can have many sensors, so filter when you "
+                "know what kind of entity is wanted. Makes no change to "
+                "anything; useful for answering 'what sensors/locks/...' "
+                "questions and before calling a state-changing tool to find "
+                "the right entity_id."
             ),
             input_schema={
                 "type": "object",
                 "properties": {
                     "domain": {
                         "type": "string",
-                        "enum": list(_KNOWN_DOMAINS),
-                        "description": "Restrict the listing to one domain. Omit for all.",
+                        "enum": list(_LISTABLE_DOMAINS),
+                        "description": (
+                            "Restrict the listing to one domain, e.g. 'sensor', "
+                            "'binary_sensor', 'lock', 'light'. Omit for all."
+                        ),
                     }
                 },
                 "required": [],
