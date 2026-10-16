@@ -897,15 +897,22 @@ class AlfredOmni:
         mirror = conv.mirror
         fold = mirror.folds()[0]
         run_envs, child_runs, sessions = mirror.views()
-        if not reply.answer.strip():
-            outcome = fold.ended.outcome if fold.ended is not None else "failed"
-            if conv.failure is not None or outcome not in ("completed", "cancelled"):
-                reply = reply.model_copy(update={"answer": WENT_WRONG})
         handoff = (
             transcript_mod.handoff_text(fold, sessions)
             if allow_handoff and fold.ended is not None
             else None
         )
+        # A new-request handoff is silent by design (A5d): only a run that did not hand off
+        # and said nothing is a failure to apologise for.
+        handed_off = (
+            fold.ended is not None
+            and fold.last_node is not None
+            and fold.last_node.outcome == speakers.HANDOFF_OUTCOME
+        )
+        if not reply.answer.strip() and not handed_off:
+            outcome = fold.ended.outcome if fold.ended is not None else "failed"
+            if conv.failure is not None or outcome not in ("completed", "cancelled"):
+                reply = reply.model_copy(update={"answer": WENT_WRONG})
         earlier = ""
         if handoff:
             entries = transcript_mod.build(run_envs, child_runs, sessions, self._library)

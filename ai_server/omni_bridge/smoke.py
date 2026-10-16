@@ -703,10 +703,9 @@ class Harness:
                 f"the handoff did not arrive with the reply (state {r.state!r}, same conversation); "
                 f"path: {self.last_path}; {late}")
             return
-        if WENT_WRONG_MARK in r.answer.lower():
-            # Not a FAIL: the handoff worked. But the person is told "something went wrong" first.
-            say_out("  WARN   : the handoff reply is prefaced with the bridge's went-wrong text "
-                    "(the finished run said nothing; see docs/omni-jev-plan.md section 12, A7c)")
+        sc.expect(WENT_WRONG_MARK not in r.answer.lower(),
+                  "the handoff reply is prefaced with the bridge's went-wrong text "
+                  "(the finished run said nothing; see docs/omni-jev-plan.md section 12, A5d)")
         sc.expect(r.continued_from == r0.conversation_id,
                   f"continued_from is {r.continued_from!r}, want {r0.conversation_id!r}")
         sc.expect(r.conversation_id != r0.conversation_id, "the handoff kept the old conversation id")
