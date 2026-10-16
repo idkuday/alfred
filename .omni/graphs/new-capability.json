@@ -3,7 +3,7 @@
   "name": "new-capability",
   "description": "The user wants something Alfred cannot currently do: design the capability, get it approved, build it, verify it, and install it. This is the Forge, as a graph.",
   "entry": "design",
-  "terminal": ["installed", "declined"],
+  "terminal": ["say-installed", "say-declined"],
   "limits": { "max_nodes": 40, "cost_usd": 3.00, "wall_clock": "2h" },
 
   "nodes": [
@@ -59,7 +59,7 @@
       "on_timeout": "rejected"
     },
     {
-      "id": "installed",
+      "id": "say-installed",
       "kind": "agent",
       "agent": "alfred",
       "prompt": "The capability is built, verified and approved. Tell the user what it is now able to do and how to ask for it, in a sentence or two. Do not recite the implementation.",
@@ -67,7 +67,7 @@
       "outcomes": ["done"]
     },
     {
-      "id": "declined",
+      "id": "say-declined",
       "kind": "agent",
       "agent": "alfred",
       "prompt": "This capability was not built — it already existed, it was refused, it timed out, or it turned out to be infeasible. Say which, briefly. If it already exists, say what to use instead. If it is infeasible, say what would have to change for it not to be.",
@@ -78,16 +78,16 @@
 
   "edges": [
     { "from": "design", "to": "approve", "on": "designed" },
-    { "from": "design", "to": "declined", "on": "already-exists" },
-    { "from": "design", "to": "declined", "on": "infeasible" },
+    { "from": "design", "to": "say-declined", "on": "already-exists" },
+    { "from": "design", "to": "say-declined", "on": "infeasible" },
     { "from": "approve", "to": "build", "on": "approved" },
-    { "from": "approve", "to": "declined", "on": "rejected" },
+    { "from": "approve", "to": "say-declined", "on": "rejected" },
     { "from": "build", "to": "verify", "on": "built" },
-    { "from": "build", "to": "declined", "on": "blocked" },
+    { "from": "build", "to": "say-declined", "on": "blocked" },
     { "from": "verify", "to": "review", "on": "verified" },
     { "from": "verify", "to": "build", "on": "rejected", "max_retries": 2 },
-    { "from": "review", "to": "installed", "on": "approved" },
+    { "from": "review", "to": "say-installed", "on": "approved" },
     { "from": "review", "to": "build", "on": "revise", "max_retries": 2 },
-    { "from": "review", "to": "declined", "on": "rejected" }
+    { "from": "review", "to": "say-declined", "on": "rejected" }
   ]
 }

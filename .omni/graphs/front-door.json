@@ -1,0 +1,135 @@
+{
+  "version": 1,
+  "name": "front-door",
+  "description": "One conversation with Alfred: Jev routes the request; devices run without a chat model; agents that talk hold the floor.",
+  "entry": "front",
+  "terminal": ["say-act", "say-status", "device-help", "chat", "clarify",
+               "troubleshoot", "routine", "new-capability"],
+  "limits": { "max_nodes": 40, "cost_usd": 5.0, "wall_clock": "4h" },
+  "nodes": [
+    { "id": "front", "kind": "decide",
+      "prompt": "A person is talking to their home assistant. What kind of request is this?",
+      "inputs": ["inputs.message"],
+      "outcomes": {
+        "device":         "A direct command to operate or check one device right now: turn something on or off, toggle it, dim it, set it, or ask its state.",
+        "troubleshoot":   "Something in the house is not working, misbehaving, offline or unresponsive and needs diagnosis.",
+        "routine":        "Several devices should change together as a named scene or routine (bedtime, leaving, movie night).",
+        "new-capability": "The person wants Alfred to learn to do something it cannot do yet, or to add a new integration or device type.",
+        "chat":           "Conversation, a question, or anything that changes nothing in the house."
+      },
+      "threshold": 0.6,
+      "constraints": { "provider": "typesafe", "model": "jev-latest", "timeout": "5s" } },
+
+    { "id": "device-action", "kind": "decide",
+      "prompt": "Which single action does the person want performed on the device?",
+      "inputs": ["inputs.message"],
+      "outcomes": {
+        "turn-on":  "Switch it on, open it, start it.",
+        "turn-off": "Switch it off, close it, stop it.",
+        "toggle":   "Flip it to the opposite of whatever it is now.",
+        "status":   "Only report its current state; change nothing.",
+        "other":    "Anything else: a level, a colour, a temperature, a mode, several devices, or unclear."
+      },
+      "threshold": 0.6,
+      "constraints": { "provider": "typesafe", "model": "jev-latest", "timeout": "5s" } },
+
+    { "id": "resolve", "kind": "tool",
+      "capability": "mcp__home_assistant__resolve_entity",
+      "args": { "request": "{{ inputs.message }}", "action": "{{ outputs.device-action.choice }}" },
+      "outcomes": {
+        "resolved":  "Exactly one device matched with confidence.",
+        "ambiguous": "Several devices could match, or confidence was low.",
+        "none":      "No device matched."
+      } },
+
+    { "id": "resolve-read", "kind": "tool",
+      "capability": "mcp__home_assistant__resolve_entity",
+      "args": { "request": "{{ inputs.message }}", "action": "status" },
+      "outcomes": {
+        "resolved":  "Exactly one device matched with confidence.",
+        "ambiguous": "Several devices could match, or confidence was low.",
+        "none":      "No device matched."
+      } },
+
+    { "id": "say-act", "kind": "tool",
+      "capability": "mcp__home_assistant__apply",
+      "args": { "action": "{{ outputs.device-action.choice }}",
+                "target": "{{ outputs.resolve }}",
+                "request": "{{ inputs.message }}" } },
+
+    { "id": "say-status", "kind": "tool",
+      "capability": "mcp__home_assistant__describe",
+      "args": { "target": "{{ outputs.resolve-read }}" } },
+
+    { "id": "device-help", "kind": "agent", "agent": "alfred",
+      "prompt": "The person asked for something about a device that needs judgement: inputs.message. Work out which device (use list_entities, and the decide tool to match a description to an entity), do what they asked with the Home Assistant tools, and tell them what happened in one or two sentences. Ask them when you genuinely cannot tell which device. If what they say next is a different request entirely, call emit_outcome with 'new-request' and put their new request, in their words, as the output. When they are done, call emit_outcome with 'done'.",
+      "inputs": ["inputs.message", "inputs.earlier"],
+      "outcomes": {
+        "done":        "The device request is handled and the person has nothing more on it.",
+        "new-request": "The person moved on to a different request; output is that request, verbatim."
+      },
+      "converse": true, "floor_timeout": "15m",
+      "constraints": { "tools": ["mcp", "decide", "clock", "remember"] } },
+
+    { "id": "chat", "kind": "agent", "agent": "alfred",
+      "prompt": "Talk with the person. inputs.earlier, if not empty, is an earlier conversation they chose to continue. If they ask you to do something in the house, call emit_outcome with 'new-request' and put the request, in their words, as the output — do not do it yourself. When the conversation is finished, call emit_outcome with 'done'.",
+      "inputs": ["inputs.message", "inputs.earlier"],
+      "outcomes": {
+        "done":        "The conversation is finished.",
+        "new-request": "The person asked for something to be done; output is that request, verbatim."
+      },
+      "converse": true, "floor_timeout": "30m",
+      "constraints": { "tools": ["clock", "remember"] } },
+
+    { "id": "clarify", "kind": "agent", "agent": "alfred",
+      "prompt": "It was not clear what the person wants (inputs.message). Ask one short question to find out. As soon as you know, call emit_outcome with 'new-request' and put their request, restated clearly in their words, as the output. If it turns out they only wanted to chat, chat, and call emit_outcome with 'done' when finished.",
+      "inputs": ["inputs.message", "inputs.earlier"],
+      "outcomes": {
+        "new-request": "The request is now clear; output is the clear request.",
+        "done":        "It was conversation and it is finished."
+      },
+      "converse": true, "floor_timeout": "10m",
+      "constraints": { "tools": ["clock"] } },
+
+    { "id": "troubleshoot", "kind": "graph", "graph": "device-troubleshoot",
+      "inputs": { "report": "{{ inputs.message }}", "earlier": "{{ inputs.earlier }}" },
+      "outcomes": ["done", "new-request"] },
+
+    { "id": "routine", "kind": "graph", "graph": "home-routine",
+      "inputs": { "routine": "{{ inputs.message }}", "earlier": "{{ inputs.earlier }}" },
+      "outcomes": ["done"] },
+
+    { "id": "new-capability", "kind": "graph", "graph": "new-capability",
+      "inputs": { "request": "{{ inputs.message }}" },
+      "outcomes": ["done"] }
+  ],
+  "edges": [
+    { "from": "front", "to": "device-action",  "on": "device" },
+    { "from": "front", "to": "troubleshoot",   "on": "troubleshoot" },
+    { "from": "front", "to": "routine",        "on": "routine" },
+    { "from": "front", "to": "new-capability", "on": "new-capability" },
+    { "from": "front", "to": "chat",           "on": "chat" },
+    { "from": "front", "to": "clarify",        "on": "unsure" },
+    { "from": "front", "to": "clarify",        "on": "error" },
+    { "from": "front", "to": "clarify",        "on": "timeout" },
+
+    { "from": "device-action", "to": "resolve",      "on": "turn-on" },
+    { "from": "device-action", "to": "resolve",      "on": "turn-off" },
+    { "from": "device-action", "to": "resolve",      "on": "toggle" },
+    { "from": "device-action", "to": "resolve-read", "on": "status" },
+    { "from": "device-action", "to": "device-help",  "on": "other" },
+    { "from": "device-action", "to": "device-help",  "on": "unsure" },
+    { "from": "device-action", "to": "device-help",  "on": "error" },
+    { "from": "device-action", "to": "device-help",  "on": "timeout" },
+
+    { "from": "resolve", "to": "say-act",     "on": "resolved" },
+    { "from": "resolve", "to": "device-help", "on": "ambiguous" },
+    { "from": "resolve", "to": "device-help", "on": "none" },
+    { "from": "resolve", "to": "device-help", "on": "error" },
+
+    { "from": "resolve-read", "to": "say-status",  "on": "resolved" },
+    { "from": "resolve-read", "to": "device-help", "on": "ambiguous" },
+    { "from": "resolve-read", "to": "device-help", "on": "none" },
+    { "from": "resolve-read", "to": "device-help", "on": "error" }
+  ]
+}
