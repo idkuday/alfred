@@ -27,6 +27,19 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(skip_live)
 
 
+@pytest.fixture(autouse=True)
+def _core_backend_by_default(monkeypatch):
+    """Run the pre-omni test modules against the ``core`` backend (omni-jev A6).
+
+    ``settings.alfred_backend`` defaults to ``omni``, but ``test_execute_*`` and the session
+    tests exercise the AlfredCore path they were written for. ``tests/test_api_omni.py``
+    overrides this per test with ``monkeypatch.setattr(settings, "alfred_backend", "omni")``.
+    """
+    from ai_server.config import settings
+
+    monkeypatch.setattr(settings, "alfred_backend", "core")
+
+
 @pytest.fixture
 def temp_db_path():
     """Provide a temporary database path for testing."""
