@@ -1,61 +1,119 @@
 {
   "version": 1,
   "name": "device-troubleshoot",
-  "description": "A device is not responding or is behaving oddly: diagnose it, attempt one bounded recovery, and either confirm it is fixed or hand the user something specific to act on.",
-  "entry": "diagnose",
-  "terminal": ["report", "escalate"],
-  "limits": { "max_nodes": 24, "cost_usd": 0.75, "wall_clock": "20m" },
-
+  "description": "Something in the house is not working: find out what with the person, gather evidence, let Jev triage it, attempt one bounded recovery, confirm it from the source, and tell the person.",
+  "entry": "intake",
+  "terminal": ["say-report", "say-escalate", "say-bye"],
+  "limits": { "max_nodes": 30, "cost_usd": 1.5, "wall_clock": "45m" },
   "nodes": [
-    {
-      "id": "diagnose",
-      "kind": "agent",
-      "agent": "alfred",
-      "prompt": "The user reports a problem with the device in inputs.device. Establish what is actually true before theorising: read the entity's current state, its last-changed and last-updated timestamps, and whether the integration behind it is reachable at all. Distinguish the three cases that look identical to a user — the device is unreachable, the device is reachable and reporting a state nobody expected, and the device is fine and the user's request was ambiguous. Emit 'recoverable' if there is a specific action worth trying, 'healthy' if nothing is actually wrong, or 'needs-human' if the fix is physical (a flat battery, a tripped breaker, an unplugged bridge).",
-      "inputs": ["inputs.device", "inputs.symptom"],
-      "outcomes": ["recoverable", "healthy", "needs-human"]
-    },
-    {
-      "id": "recover",
-      "kind": "agent",
-      "agent": "alfred",
-      "prompt": "Attempt exactly the one recovery named in outputs.diagnose. One attempt — a retry loop against an unreachable device is noise, and the edge into this node is bounded for that reason. If the action is physical it will ask, as it should. Emit 'recovered' or 'still-broken', and say what the call actually returned.",
-      "inputs": ["inputs.device", "outputs.diagnose"],
-      "outcomes": ["recovered", "still-broken"]
-    },
-    {
-      "id": "confirm-fixed",
-      "kind": "agent",
-      "agent": "alfred",
-      "prompt": "Read the device's state back from the source and decide whether the original symptom in inputs.symptom is genuinely gone. A call that returned success is not evidence; the read-back is. Emit 'fixed' or 'not-fixed'.",
-      "inputs": ["inputs.device", "inputs.symptom", "outputs.recover"],
-      "outcomes": ["fixed", "not-fixed"]
-    },
-    {
-      "id": "report",
-      "kind": "agent",
-      "agent": "alfred",
-      "prompt": "Tell the user what was wrong and what you did about it, briefly and in your own voice. If nothing was wrong, say what the device is actually doing and why it may have looked broken.",
-      "inputs": ["inputs.device", "outputs.diagnose", "outputs.confirm-fixed"],
-      "outcomes": ["done"]
-    },
-    {
-      "id": "escalate",
-      "kind": "agent",
-      "agent": "alfred",
-      "prompt": "You could not fix this from here. Give the user the shortest specific thing they can do about it — which device, where, what to check — not a list of possibilities. Say plainly what you tried and what it returned. 'Have you tried turning it off and on again' is not an answer unless you can say exactly what to power cycle.",
-      "inputs": ["inputs.device", "outputs.diagnose", "outputs.recover", "outputs.confirm-fixed"],
-      "outcomes": ["done"]
-    }
-  ],
+    { "id": "intake", "kind": "agent", "agent": "alfred",
+      "prompt": "The person reported a problem: inputs.report (inputs.earlier, if not empty, is an earlier conversation they continued). Find out which device and what exactly is wrong — read entity state with the tools and use the decide tool to match their words to an entity; ask them only what you cannot read. When you know the device (entity_id and name) and the symptom, call emit_outcome with 'identified' and put both, plainly, as the output. If they move on to something else entirely, call emit_outcome with 'new-request' with that request as the output. If they want to stop, 'gave-up'.",
+      "inputs": ["inputs.report", "inputs.earlier"],
+      "outcomes": {
+        "identified":  "Device and symptom are known; output names both.",
+        "new-request": "The person moved on; output is the new request, verbatim.",
+        "gave-up":     "The person does not want to continue."
+      },
+      "converse": true, "floor_timeout": "15m",
+      "constraints": { "tools": ["mcp", "decide", "clock"] } },
 
+    { "id": "inspect", "kind": "agent", "agent": "alfred",
+      "prompt": "Gather evidence about the device and symptom in outputs.intake. Read the entity's current state, its last-changed and last-updated times, and whether the integration behind it is reachable. Do not change anything. Write a short factual report: what you read, and which of these it looks like — unreachable, reachable but reporting an unexpected state, or fine (the request was ambiguous). Then call emit_outcome with 'done' and the report as the output.",
+      "inputs": ["outputs.intake"],
+      "outcomes": ["done"],
+      "constraints": { "tools": ["mcp", "clock"] } },
+
+    { "id": "triage", "kind": "decide",
+      "prompt": "Given the problem and the evidence, what should happen next?",
+      "inputs": ["outputs.intake", "outputs.inspect"],
+      "outcomes": {
+        "recoverable": "There is one specific remote action worth trying (reload an integration, re-send a command, toggle it).",
+        "healthy":     "Nothing is actually wrong; the device is doing what it should.",
+        "needs-human": "The fix is physical: a battery, a breaker, an unplugged bridge, a device out of range."
+      },
+      "threshold": 0.7,
+      "constraints": { "provider": "typesafe", "model": "jev-latest", "timeout": "5s" } },
+
+    { "id": "diagnose-llm", "kind": "agent", "agent": "alfred",
+      "prompt": "Decide from the problem in outputs.intake and the evidence in outputs.inspect: emit 'recoverable' if there is a specific action worth trying, 'healthy' if nothing is actually wrong, or 'needs-human' if the fix is physical. Say why in one sentence as the output.",
+      "inputs": ["outputs.intake", "outputs.inspect"],
+      "outcomes": ["recoverable", "healthy", "needs-human"],
+      "constraints": { "tools": ["mcp", "clock"] } },
+
+    { "id": "recover", "kind": "agent", "agent": "alfred",
+      "prompt": "Attempt exactly one recovery for the device in outputs.intake, guided by the evidence in outputs.inspect. One attempt. If the action is physical it will ask, as it should. Emit 'recovered' or 'still-broken', and put what the call actually returned as the output.",
+      "inputs": ["outputs.intake", "outputs.inspect"],
+      "outcomes": ["recovered", "still-broken"],
+      "constraints": { "tools": ["mcp", "clock"] } },
+
+    { "id": "read-back", "kind": "agent", "agent": "alfred",
+      "prompt": "Read the device in outputs.intake back from the source now. Report its state and timestamps factually. A call that returned success is not evidence; the read-back is. Emit 'done' with the report as the output.",
+      "inputs": ["outputs.intake", "outputs.recover"],
+      "outcomes": ["done"],
+      "constraints": { "tools": ["mcp", "clock"] } },
+
+    { "id": "fixed", "kind": "decide",
+      "prompt": "Is the original symptom genuinely gone, according to the read-back?",
+      "inputs": ["outputs.intake", "outputs.read-back"],
+      "outcomes": {
+        "fixed":     "The read-back shows the device now behaves as the person wanted.",
+        "not-fixed": "The read-back still shows the problem, or does not show it gone."
+      },
+      "threshold": 0.7,
+      "constraints": { "provider": "typesafe", "model": "jev-latest", "timeout": "5s" } },
+
+    { "id": "confirm-llm", "kind": "agent", "agent": "alfred",
+      "prompt": "Compare the symptom in outputs.intake with the read-back in outputs.read-back. Emit 'fixed' only if the read-back shows the symptom gone; otherwise 'not-fixed'.",
+      "inputs": ["outputs.intake", "outputs.read-back"],
+      "outcomes": ["fixed", "not-fixed"],
+      "constraints": { "tools": ["clock"] } },
+
+    { "id": "say-report", "kind": "agent", "agent": "alfred",
+      "prompt": "Tell the person what was wrong and what you did about it, briefly and in your own voice. If nothing was wrong, say what the device is actually doing and why it may have looked broken. Use run_context to read whichever of outputs.recover and outputs.read-back exist.",
+      "inputs": ["outputs.intake", "outputs.inspect"],
+      "readable": ["outputs.*"],
+      "outcomes": ["done"],
+      "constraints": { "tools": ["clock"] } },
+
+    { "id": "say-escalate", "kind": "agent", "agent": "alfred",
+      "prompt": "You could not fix this from here. Give the person the shortest specific thing they can do about it — which device, where, what to check. Say plainly what you tried and what it returned (use run_context to read outputs.recover and outputs.read-back if they exist).",
+      "inputs": ["outputs.intake", "outputs.inspect"],
+      "readable": ["outputs.*"],
+      "outcomes": ["done"],
+      "constraints": { "tools": ["clock"] } },
+
+    { "id": "say-bye", "kind": "agent", "agent": "alfred",
+      "prompt": "Read outputs.intake. If the person moved on to a new request, call emit_outcome with 'new-request' and repeat that request verbatim as the output, and say nothing to the person. Otherwise say a one-line goodbye and call emit_outcome with 'done'.",
+      "inputs": ["outputs.intake"],
+      "outcomes": {
+        "done":        "The person stopped; a goodbye was said.",
+        "new-request": "The person moved on; output is the new request, verbatim."
+      },
+      "constraints": { "tools": ["clock"] } }
+  ],
   "edges": [
-    { "from": "diagnose", "to": "recover", "on": "recoverable" },
-    { "from": "diagnose", "to": "report", "on": "healthy" },
-    { "from": "diagnose", "to": "escalate", "on": "needs-human" },
-    { "from": "recover", "to": "confirm-fixed", "on": "recovered" },
-    { "from": "recover", "to": "escalate", "on": "still-broken" },
-    { "from": "confirm-fixed", "to": "report", "on": "fixed" },
-    { "from": "confirm-fixed", "to": "recover", "on": "not-fixed", "max_retries": 1 }
+    { "from": "intake", "to": "inspect",  "on": "identified" },
+    { "from": "intake", "to": "say-bye",  "on": "new-request" },
+    { "from": "intake", "to": "say-bye",  "on": "gave-up" },
+    { "from": "inspect", "to": "triage",      "on": "done" },
+    { "from": "triage", "to": "recover",      "on": "recoverable" },
+    { "from": "triage", "to": "say-report",   "on": "healthy" },
+    { "from": "triage", "to": "say-escalate", "on": "needs-human" },
+    { "from": "triage", "to": "diagnose-llm", "on": "unsure" },
+    { "from": "triage", "to": "diagnose-llm", "on": "error" },
+    { "from": "triage", "to": "diagnose-llm", "on": "timeout" },
+    { "from": "diagnose-llm", "to": "recover",      "on": "recoverable" },
+    { "from": "diagnose-llm", "to": "say-report",   "on": "healthy" },
+    { "from": "diagnose-llm", "to": "say-escalate", "on": "needs-human" },
+    { "from": "recover", "to": "read-back",    "on": "recovered" },
+    { "from": "recover", "to": "say-escalate", "on": "still-broken" },
+    { "from": "read-back", "to": "fixed",      "on": "done" },
+    { "from": "fixed", "to": "say-report",     "on": "fixed" },
+    { "from": "fixed", "to": "recover",        "on": "not-fixed", "max_retries": 1 },
+    { "from": "fixed", "to": "confirm-llm",    "on": "unsure" },
+    { "from": "fixed", "to": "confirm-llm",    "on": "error" },
+    { "from": "fixed", "to": "confirm-llm",    "on": "timeout" },
+    { "from": "confirm-llm", "to": "say-report", "on": "fixed" },
+    { "from": "confirm-llm", "to": "recover",    "on": "not-fixed", "max_retries": 1 }
   ]
 }

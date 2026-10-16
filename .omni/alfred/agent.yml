@@ -22,6 +22,12 @@ provider: anthropic
 model: claude-sonnet-4-6
 max_tokens: 4096
 
+# Jev (Typesafe) answers the `decide` tool: matching a spoken description to an entity,
+# and every other bounded either/or an agent node needs. omni-jev J17.
+decision:
+  provider: typesafe
+  model: jev-latest
+
 # Interactive, not autonomous. Alfred is driven — by a voice client, alfred-ui, or a
 # terminal — and answers. Autonomous mode is for an agent that wakes itself on a
 # schedule; a house assistant that decides on its own to start doing things is a
@@ -72,6 +78,8 @@ tools:
     - glob
     - clock
     - remember
+    - decide
+    - run_context
     - list_graphs
     - run_graph
     - create_graph
