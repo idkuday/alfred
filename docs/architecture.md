@@ -33,12 +33,27 @@ alfred-ui / voice ──HTTP──► FastAPI (ai_server/main.py)
 `ai_server/config.py` (`Settings`, pydantic-settings, reads `.env` from the working
 directory).
 
-> **Planned (omni-jev, A1).** `REPO_ROOT` is a module constant; `plugins_dir` defaults to
-> the absolute `ai_server/plugins` (so plugins load from any cwd); new settings
-> `jev_key_file`, `decision_provider`, `decision_model`, `resolve_threshold`,
-> `resolve_max_candidates`, `alfred_backend`, `omni_front_graph`, `omni_node_provider`,
-> `omni_node_model`, `omni_ask_timeout`, `omni_turn_timeout`, `omni_earlier_chars`,
-> `data_dir` — see [omni-jev-plan.md](omni-jev-plan.md) §10.1.
+> **As built (omni-jev, A1).** `REPO_ROOT = Path(__file__).resolve().parents[1]` is a
+> module constant in `config.py`, not a setting. `plugins_dir` defaults to the absolute
+> `ai_server/plugins`, and `PluginManager()` defaults to its own package directory, so
+> plugins load from any cwd (before A1 a relative `"plugins"` found none outside the
+> repo root). Every setting below is overridable by env var of the same name, upper-cased
+> (`JEV_KEY_FILE`, `ALFRED_BACKEND`, ...):
+>
+> - `jev_key_file` (default `<repo>/jev.env`): the Jev key file. Raw key, no `KEY=`
+>   prefix. Code reads it only through `KeyFileCredential`. Never print or commit it.
+> - `decision_provider` (`"typesafe"`), `decision_model` (`"jev-latest"`).
+> - `resolve_threshold` (`0.6`), `resolve_max_candidates` (`200`).
+> - `alfred_backend` (`"omni"` or `"core"`, default `"omni"`).
+> - `omni_front_graph` (`"front-door"`), `omni_node_provider`, `omni_node_model` (both
+>   `None` (unset).
+> - `omni_ask_timeout` (`300.0` s), `omni_turn_timeout` (`120.0` s),
+>   `omni_earlier_chars` (`6000`).
+> - `data_dir` (default `<repo>/data`, git-ignored).
+>
+> These are declared only. No code reads them yet; later omni-jev tasks wire them up.
+> `.gitignore` covers `jev.env`, `.omni/mcp.local.json` and `data/`. See
+> [omni-jev-plan.md](omni-jev-plan.md) §10.1.
 
 ## HTTP API
 

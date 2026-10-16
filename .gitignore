@@ -242,3 +242,9 @@ test_response.json
 # Debug/test output artifacts
 test_output.txt
 test_output_utf8.txt
+
+# Omni / Jev (omni-jev plan): the Jev key is a raw secret file that lives only in the
+# main checkout; local MCP overrides and bridge state are per-machine.
+jev.env
+.omni/mcp.local.json
+data/
