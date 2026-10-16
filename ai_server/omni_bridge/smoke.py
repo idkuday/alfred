@@ -65,7 +65,17 @@ SCENARIOS = ("9.1", "9.2", "9.3", "9.4")
 #: A scenario that needs an earlier one's conversation: 9.4 continues the conversation 9.1 ended
 #: (a deterministic, Jev-routed one). 9.2 and 9.3 each open their own troubleshooting conversation,
 #: so a model that misbehaves in one cannot hide the other.
-PREREQUISITES = {"9.1": (), "9.2": (), "9.3": (), "9.4": ("9.1",)}
+PREREQUISITES = {"9.1": (), "9.2": (), "9.3": (), "9.4": ("9.1",), "9.3x": ()}
+#: Optional extras, run only with ``--extras`` or named in ``--only``: 9.3x is 9.3's handoff out of a
+#: *troubleshooting intake*, which depends on the model choosing to ask a question.
+EXTRA_SCENARIOS = ("9.3x",)
+#: 9.3 opens with a request ``front`` routes to ``chat``, a converse node that always holds the floor
+#: and exits ``new-request`` (J10) when the person asks for something to be done.
+#: Worded to keep the conversation open: "how are you?" alone was answered and then ended by the model
+#: (`chat=done`) on a live run, which is legitimate but leaves nothing to hand off from.
+CHAT_OPENER = ("let's have a proper chat, I have time. Ask me how my day was, and wait for my "
+               "answer before you say anything else")
+TOPIC_CHANGE = "actually, turn on the coffee maker"
 
 #: What Alfred says when a run died silently (``client.WENT_WRONG``); matched loosely, lower case.
 WENT_WRONG_MARK = "something went wrong on my side"
@@ -86,8 +96,8 @@ INTAKE_ANSWER = "it's the garage motion sensor, it keeps going offline"
 #: Extra sensors seeded into the mock for the troubleshooting scenarios (state is per server
 #: instance, so nothing leaks into the shared fixture or other tests).
 EXTRA_SENSORS = {
-    "binary_sensor.garage_motion": ("Garage Motion", "unavailable"),
-    "binary_sensor.basement_motion": ("Basement Motion", "unavailable"),
+    "binary_sensor.garage_motion": ("Garage Motion", "off"),
+    "binary_sensor.basement_motion": ("Basement Motion", "off"),
     "binary_sensor.front_door_contact": ("Front Door Contact", "off"),
 }
 
@@ -392,13 +402,14 @@ class Harness:
     def scenarios(self) -> list[str]:
         if self.args.only:
             picked = {s.strip() for s in self.args.only.split(",") if s.strip()}
-            unknown = picked - set(SCENARIOS)
+            known = SCENARIOS + EXTRA_SCENARIOS
+            unknown = picked - set(known)
             if unknown:
-                raise SystemExit(f"unknown scenario(s) {sorted(unknown)}; choose from {SCENARIOS}")
+                raise SystemExit(f"unknown scenario(s) {sorted(unknown)}; choose from {known}")
             for s in list(picked):
                 picked.update(PREREQUISITES[s])
-            return [s for s in SCENARIOS if s in picked]
-        return list(SCENARIOS)
+            return [s for s in known if s in picked]
+        return list(SCENARIOS) + (list(EXTRA_SCENARIOS) if self.args.extras else [])
 
     # -- start / stop --------------------------------------------------------
 
@@ -439,9 +450,10 @@ class Harness:
             say_out(f"note: journal observer unavailable ({type(exc).__name__}); paths will be blank")
 
     def seed_ambiguity(self) -> None:
-        """Make "one of my sensors keeps going offline" genuinely ambiguous in the mock."""
+        """Give the mock several healthy sensors, so a report that names none cannot be solved by
+        reading the house (with an offline sensor in view the model just picks it: seen live once
+        ``list_entities`` listed every domain), and the intake has to ask."""
         states = self.mock.states
-        states["binary_sensor.hallway_motion"]["state"] = "unavailable"
         for entity_id, (name, state) in EXTRA_SENSORS.items():
             states[entity_id] = {
                 "entity_id": entity_id,
@@ -680,13 +692,10 @@ class Harness:
                   f"the answer neither identified the device nor got another question "
                   f"(state {r2.state!r}); path: {self.last_path}")
 
-    async def s93(self, sc: Scenario, ctx: dict[str, Any]) -> None:
-        """9.3: a topic change inside the intake hands off to a new conversation."""
-        say_out(f"[9.3] {sc.title}")
-        r0 = await self.ambiguous_intake(sc, attempts=3)
-        if r0 is None:
-            return
-        text = "actually, forget that - turn on the coffee maker"
+    async def handoff(self, sc: Scenario, r0: Any, text: str) -> None:
+        """Shared by 9.3 and 9.3x: ``text`` is said to the floor-holding conversation ``r0``; the
+        bridge must answer from a NEW linked conversation that routed ``device`` and offers the
+        physical ask, which is then refused."""
         r, segs = await self.exchange(text, self.bridge.say(text, r0.conversation_id))
         if not r.new_conversation:
             late = await self.late_path(r0.conversation_id)
@@ -694,20 +703,63 @@ class Harness:
                 f"the handoff did not arrive with the reply (state {r.state!r}, same conversation); "
                 f"path: {self.last_path}; {late}")
             return
+        if WENT_WRONG_MARK in r.answer.lower():
+            # Not a FAIL: the handoff worked. But the person is told "something went wrong" first.
+            say_out("  WARN   : the handoff reply is prefaced with the bridge's went-wrong text "
+                    "(the finished run said nothing; see docs/omni-jev-plan.md section 12, A7c)")
         sc.expect(r.continued_from == r0.conversation_id,
                   f"continued_from is {r.continued_from!r}, want {r0.conversation_id!r}")
         sc.expect(r.conversation_id != r0.conversation_id, "the handoff kept the old conversation id")
-        sc.expect(r.state == "awaiting_approval", f"reply state is {r.state!r}, want awaiting_approval")
+        front = [x for x in segs if x.node == "front" and x.run == r.conversation_id]
+        sc.expect(front and front[0].outcome == "device",
+                  f"the new run did not route device ({front[0].outcome if front else 'no front node'}); "
+                  f"path: {self.last_path}")
+        sc.expect(r.state == "awaiting_approval",
+                  f"reply state is {r.state!r}, want awaiting_approval; path: {self.last_path}")
         sc.expect("coffee" in r.answer.lower(), "the approval question does not name the Coffee Maker")
         if r.pending is None:
             sc.failures.append(f"no pending ask after the handoff; path: {self.last_path}")
             return
         r2, _, _ = await self.answer(r, yes=False)
         sc.expect(r2.state == "ended", f"after the refusal state is {r2.state!r}, want ended")
+        said = r2.answer.lower().replace("’", "'")
+        sc.expect("didn't" in said or "did not" in said or "not done" in said,
+                  f"Alfred did not say he left it undone (said {clip(r2.answer, 120)!r})")
         sc.expect(self.mock.states["switch.coffee_maker"]["state"] == "off",
                   "the coffee maker was switched on although the ask was refused")
         old = [c for c in await self.bridge.list_conversations() if c.conversation_id == r0.conversation_id]
         sc.expect(old and old[0].state == "ended", "the first conversation is not listed as ended")
+
+    async def s93(self, sc: Scenario, ctx: dict[str, Any]) -> None:
+        """9.3: a topic change inside a chat (a node that holds the floor) hands off."""
+        say_out(f"[9.3] {sc.title}")
+        notes: list[str] = []
+        r0 = None
+        for attempt in (1, 2):  # a model may still end the chat itself; that leaves nothing to hand off
+            r, segs = await self.exchange(CHAT_OPENER, self.bridge.say(CHAT_OPENER, None))
+            front = [x for x in segs if x.node == "front" and x.run == r.conversation_id]
+            routed = front[0].outcome if front else "no front node"
+            if routed != "chat":
+                notes.append(f"attempt {attempt}: front routed {routed!r}; path: {self.last_path}")
+            elif r.state != "awaiting_user" or not r.answer.strip():
+                notes.append(f"attempt {attempt}: chat did not hold the floor (state {r.state!r}); "
+                             f"path: {self.last_path}")
+            else:
+                r0 = r
+                break
+            say_out(f"  note   : {notes[-1].split('; path')[0]}")
+        if r0 is None:
+            sc.failures.append("no chat conversation held the floor: " + " | ".join(notes))
+            return
+        await self.handoff(sc, r0, TOPIC_CHANGE)
+
+    async def s93x(self, sc: Scenario, ctx: dict[str, Any]) -> None:
+        """9.3x (optional): the same handoff out of the troubleshooting intake."""
+        say_out(f"[9.3x] {sc.title}")
+        r0 = await self.ambiguous_intake(sc, attempts=3)
+        if r0 is None:
+            return
+        await self.handoff(sc, r0, "actually, forget that - turn on the coffee maker")
 
     async def s94(self, sc: Scenario, ctx: dict[str, Any]) -> None:
         """9.4: an ended conversation (9.1's) is listed, readable, and can be continued."""
@@ -746,10 +798,12 @@ class Harness:
         titles = {
             "9.1": "device command, no chat model: lamp on after an automatic yes",
             "9.2": "troubleshooting: ambiguous report, intake asks, the answer is taken",
-            "9.3": "topic change inside the intake: hand off to a new conversation (refused ask)",
+            "9.3": "topic change inside a chat: hand off to a new conversation (refused ask)",
+            "9.3x": "optional: topic change inside the troubleshooting intake",
             "9.4": "load an earlier (ended) conversation and continue it",
         }
-        funcs = {"9.1": self.s91, "9.2": self.s92, "9.3": self.s93, "9.4": self.s94}
+        funcs = {"9.1": self.s91, "9.2": self.s92, "9.3": self.s93, "9.4": self.s94,
+                 "9.3x": self.s93x}
         results: list[Scenario] = []
         ctx: dict[str, Any] = {}
         failed: set[str] = set()
@@ -807,9 +861,8 @@ class Harness:
               f"home_assistant env has HA_URL={ha_env.get('HA_URL')} and JEV_KEY_FILE"
               f"{' (the real key file path)' if self.jev_on else ' (a file that does not exist)'}")
 
-        offline = sorted(k for k, v in self.mock.states.items()
-                         if k.startswith("binary_sensor.") and v["state"] == "unavailable")
-        check("ambiguity seeded", len(offline) >= 2, f"offline sensors in the mock: {', '.join(offline)}")
+        sensors = sorted(k for k in self.mock.states if k.startswith("binary_sensor."))
+        check("ambiguity seeded", len(sensors) >= 3, f"sensors in the mock: {', '.join(sensors)}")
         check("mock HA reachable", await asyncio.to_thread(self._mock_ok), self.mock_url)
         check("daemon healthy", await self.bridge.healthy(), "list_runs answered")
         check("journal observer", self.observer is not None, "second client attached")
@@ -864,6 +917,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--jev-key-file", default=None, metavar="PATH",
                    help="the Jev key file (default: settings.jev_key_file; in a worktree pass the "
                         "main checkout's jev.env)")
+    p.add_argument("--extras", action="store_true",
+                   help="also run the optional scenario 9.3x (handoff out of the troubleshooting intake)")
     p.add_argument("--only", default=None, metavar="9.1,9.3",
                    help="comma-separated scenarios (prerequisites are added automatically)")
     p.add_argument("--timeout", type=float, default=900.0, help="hard overall timeout, seconds")

@@ -47,3 +47,9 @@ def test_jev_key_is_never_printed(tmp_path, capsys):
     h = _harness("--jev", "--jev-key-file", str(key), "--dry-run")
     h.preflight()
     assert "sk-secret-value-123" not in capsys.readouterr().out
+
+
+def test_extras_are_opt_in():
+    assert "9.3x" not in _harness().scenarios()
+    assert _harness("--extras").scenarios() == [*smoke.SCENARIOS, "9.3x"]
+    assert _harness("--only", "9.3x").scenarios() == ["9.3x"]
