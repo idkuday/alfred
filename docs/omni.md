@@ -66,8 +66,8 @@ Assistant writes are `physical` (ask every call), reads are `read`.
 
 ## Conversations
 
-> **As built (omni-jev, A4).** The pure logic is in `ai_server/omni_bridge/`; the I/O that
-> drives it is A5's `client.py`.
+> **As built (omni-jev, A4, A5).** The pure logic is in `ai_server/omni_bridge/`; the I/O that
+> drives it is `client.py` (A5).
 >
 > - **One conversation = one run of `front-door`** (J1); its id is the run id. When the graph
 >   exits the conversation is over.
@@ -96,8 +96,43 @@ Assistant writes are `physical` (ask every call), reads are `read`.
 >   event alone. Right after prompting a floor session, pass `since` so the previous (ended)
 >   turn is not mistaken for the answer.
 >
-> **Planned (omni-jev, A5).** `POST /sessions/{id}/continue`, the routing in `say()`, and
-> `forget()` (cancel the run and add its id to the hidden file). See the plan §7.8.
+> **As built (omni-jev, A5).** `AlfredOmni.say(text, conversation_id)` routes per plan section 7.8:
+>
+> | The id is... | What happens |
+> |---|---|
+> | `None`, unknown, hidden | a new run (`new_conversation: true`) |
+> | a live run with a pending ask | the message is the answer (see Asks), then wait |
+> | a live run holding the floor | `client.prompt(floor_session, text)`, then wait |
+> | a live run still working | `state: "working"`, `I'm still on it.` (never queued; speech that arrived after an earlier timeout is delivered instead) |
+> | an ended run | a **fresh** conversation, no seed (J11) |
+>
+> A call for a conversation whose previous `say()` is still waiting also answers `I'm still on
+> it.` immediately. "Wait" is quiescence (section 7.4) bounded by `settings.omni_turn_timeout`
+> (J19); `state: "working"` on timeout. Before a reply is composed the bridge makes sure
+> every stream it attached has been read up to the head it had at attach time, so a run that
+> ended in milliseconds is not reported with its last node's words missing.
+>
+> - **Handoff** (J10): when the run ends with a terminal `new-request`, `say()` reads the
+>   words back, builds `earlier` from the ended run's transcript, starts the next run and
+>   returns its reply with the **new** `conversation_id`, `continued_from` = the old id and
+>   `new_conversation: true`; the old run's last words, if any, come first. At most one
+>   automatic handoff per call. A terminal speaker that exits `new-request` is silent
+>   (A4), which includes its earlier turns in that run's transcript.
+> - **`continue_from(id, text)`** (J11): a new run with `inputs.earlier` = the old
+>   conversation's transcript (newest `omni_earlier_chars`), `continues` = the old id. The old
+>   id may be live, ended or from before a restart; unknown or hidden raises
+>   `ConversationNotFound`.
+> - **`list_conversations()`** shows front-door runs only (those carrying `message` and
+>   `continues` inputs; subgraph runs do not), newest first, from the journal; ended runs'
+>   folds are cached. **`transcript(id)`** replays the run, its child runs and speaker
+>   sessions from the journal. A run whose graph has since been edited keeps its user
+>   messages and answers but loses node speech (its `definition_ref` no longer resolves).
+> - **`forget(id)`**: cancels the run if live (`cancel_run(id, "forgotten")`) and adds the id
+>   to `<data_dir>/hidden_conversations.json`; `False` for an id that is not a conversation.
+>   Hidden ids are skipped by listings and start fresh conversations if used.
+> - **Errors:** `ConversationNotFound` (`LookupError`) and `BridgeUnavailable`
+>   (`RuntimeError`) live in `omni_bridge.models` and are re-exported by the package;
+>   `ValueError` for a bad `answer_ask`.
 
 ## What Alfred says
 
@@ -139,20 +174,59 @@ Assistant writes are `physical` (ask every call), reads are `read`.
 > never sent, because a physical call is approved per call. A sandbox ask sends
 > `allow`/`deny` as they are. An approval answers with the request's own outcome names.
 >
-> **Planned (omni-jev, A5).** Routing the next `/execute` message through this, the
-> direct `POST /sessions/{id}/asks/{req_id}` answer, and the `respond` call itself. See the
-> plan §7.6 and §7.8.
+> **As built (omni-jev, A5).** A relayed ask is a `Request` on the run's (or a child run's)
+> stream; the bridge answers it with `client.respond(stream_id, req_id, word, data=...)` where
+> `word` is `asks.decision_word` (`allow` is sent as `once`). The next `/execute` message is
+> the answer (J14): `say()` calls `asks.interpret`, then `asks.step`. A clear answer is sent
+> and the bridge waits until it has read the `Response` back (the old `Request` is still in
+> its mirror until then) before judging the run; an unclear one returns the re-ask with the
+> same `pending` (`reasks` is kept between messages for as long as the process lives; after
+> a restart the count starts again). A refusal's `Okay, I didn't do that.` is not repeated
+> when the denied tool node says it too. `answer_ask(id, req_id, decision)` is the direct
+> path for UIs with buttons: `decision` must be one of the pending ask's options (`allow` /
+> `deny` for permissions); `ValueError` if `req_id` is not the conversation's pending ask or
+> the decision is not an option; `ConversationNotFound` for a conversation that is not live.
+> If the kernel reports the ask already answered (for example it timed out), the bridge
+> carries on and reports what happened.
 
 ## The bridge
 
-> **Planned (omni-jev, A5).** `ai_server/omni_bridge/client.py` — `AlfredOmni`: one
-> `NativeClient`, a `GraphHost` per live run, a reader task per attached stream. See the
-> plan §7.2.
+> **As built (omni-jev, A5).** `ai_server/omni_bridge/client.py`: `AlfredOmni(repo_root,
+> settings, *, decide=decisions.choose, client_factory=None)`.
+>
+> - **`start()`** writes `.omni/mcp.local.json`, loads the graph library (constraints
+>   injected, J6), connects, and re-adopts live runs. **`close()`** cancels the host tasks and
+>   closes the client; the daemon and its runs are untouched. **`healthy()`** is a cheap
+>   `list_runs` that must answer within 5 s.
+> - **Connection.** With no `client_factory` the bridge uses
+>   `omni.cli.connect.open_client(spawn=True)`. That module needs `prompt_toolkit` (the
+>   kernel's `[cli]` extra); in a venv without it the bridge joins an **already running**
+>   daemon through `omni.codec` instead (discovery file, probe, `NativeClient.connect`) and
+>   raises `BridgeUnavailable` if there is none. There is no automatic reconnect: after a lost
+>   connection calls raise `BridgeUnavailable` until the process restarts.
+> - **Jev key for a daemon the bridge starts (J16, secondary path).** If no daemon is running
+>   and `TYPESAFE_API_KEY` is not set, `start()` reads `settings.jev_key_file` through
+>   `KeyFileCredential` and spawns the daemon with the key in **that child's** environment
+>   (`ensure_daemon(spawn=...)`); it is never logged or kept. A daemon someone else started is
+>   not touched, so the permanent setup is still `~/.omni/providers/typesafe/config.yml`.
+> - **Streams.** Per conversation one *mirror*: the root run, each child run (found through
+>   `NodeEntered.session_id`, which is a run id for a `graph` node) and each **speaking**
+>   node's session stream, each read by its own task (a stream nobody reads stalls the whole
+>   connection). Silent nodes' sessions are never attached. A `GraphHost` per root run drives
+>   the graph and adopts child runs itself.
 
 ## Restart
 
-> **Planned (omni-jev, A5).** On start-up the bridge re-adopts live front-door runs whose
-> graph it still has and cancels those whose graph changed (J18).
+> **As built (omni-jev, A5).** On `start()` the bridge lists live `client:graph` runs
+> (`list_runs(module="client:graph")`). A run whose `definition_ref` is a front-door graph in
+> the library is re-adopted: a mirror is built from the journal and a `GraphHost` resumes it.
+> Its history is treated as already delivered, and a pending ask is re-rendered from the
+> journal, so the next message answers it. A run whose ref is **not** in the library (the
+> graph file, or a house setting that changes the injected constraints, changed since) is
+> cancelled with reason `graph changed` (J18); this includes any other `client:graph` run in
+> the same daemon, so do not run unrelated graphs from another client while Alfred restarts.
+> A subgraph's child run with a known ref is left to its parent's host. Ended conversations
+> need no adoption: listings and transcripts are rebuilt from the journal on demand.
 
 ## Smoke test
 
