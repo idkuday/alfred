@@ -252,7 +252,7 @@ Assistant writes are `physical` (ask every call), reads are `read`.
 
 ## Smoke test
 
-> **As built (omni-jev, A7).** `ai_server/omni_bridge/smoke.py` drives plan sections 9.1 to 9.4
+> **As built (omni-jev, A7, A7b).** `ai_server/omni_bridge/smoke.py` drives plan sections 9.1 to 9.4
 > through a real omni daemon and the real `front-door` graph, with Alfred's Home Assistant MCP
 > server pointed at the **mock** Home Assistant (no real house). Run from the repo root:
 >
@@ -275,7 +275,12 @@ Assistant writes are `physical` (ask every call), reads are `read`.
 >   daemon it spawns. Nothing is printed. In a worktree pass the main checkout's `jev.env`
 >   (`--jev-key-file`), since a worktree has none. Without `--jev` the script removes
 >   `TYPESAFE_API_KEY` from its environment and points the key setting at a missing file.
-> * `--only 9.1` runs one scenario (prerequisites are added: 9.3 needs 9.2, 9.4 needs 9.2 and 9.3).
+> * Live runs in this environment use DeepSeek for the agent nodes (the Anthropic key here is
+>   rejected): prefix the command with `OMNI_NODE_PROVIDER=deepseek OMNI_NODE_MODEL=deepseek-v4-flash`
+>   (PowerShell: set `$env:OMNI_NODE_PROVIDER` / `$env:OMNI_NODE_MODEL` first). The banner prints the
+>   effective `provider/model` after the override, and whether its key was found.
+> * `--only 9.1` runs one scenario (9.4 adds 9.1, whose ended conversation it continues; 9.2 and 9.3
+>   are self-contained).
 >   `--timeout` (default 900 s) is a hard overall limit; `--turn-timeout` bounds one bridge call.
 >   `--shared-daemon` uses your normal daemon instead of a private one.
 >
@@ -285,15 +290,22 @@ Assistant writes are `physical` (ask every call), reads are `read`.
 > The daemon is stopped and the temp directory removed on every exit path, and `mcp.local.json`
 > is regenerated clean.
 >
-> Scenarios: **9.1** "turn on the bedroom lamp" then an automatic yes (words through Jev with
-> `--jev`, otherwise `answer_ask(allow)`), checking no chat node ran and the mock's lamp is on;
-> **9.2** "the hallway sensor keeps going offline" reaches the intake (`awaiting_user`);
-> **9.3** "actually, forget that - turn on the coffee maker" hands off to a new conversation
-> (`continued_from`, `new_conversation`), which is then refused (the mock stays off);
-> **9.4** the first conversation is listed `ended`, its transcript is readable, and
-> `continue_from` starts a new run whose `inputs.earlier` carries it. Each prints PASS or FAIL,
+> Scenarios (the mock is seeded with several offline sensors, so a report that names no device
+> is genuinely ambiguous): **9.1** "turn on the bedroom lamp" then an automatic yes (words through
+> Jev with `--jev`, otherwise `answer_ask(allow)`), checking no chat node ran and the mock's lamp is
+> on; **9.2** "something in the house is not working and I don't know what" makes intake ask, then
+> "it's the garage motion sensor, it keeps going offline" is taken (the conversation continues:
+> same id, `intake=identified` or another question); **9.3** the same opener in a fresh
+> conversation, then "actually, forget that - turn on the coffee maker" must arrive with the reply
+> as a new conversation (`continued_from`, `new_conversation`, an approval ask) that is then refused
+> (the mock stays off); **9.4** 9.1's ended conversation is listed `ended`, its transcript is
+> readable, and `continue_from("that lamp keeps going offline")` starts a new linked run whose
+> `inputs.earlier` carries it. 9.4 asserts only the plumbing, not how the model routes or words the
+> follow-up. 9.2 and 9.3 try a second (9.3: third) fresh conversation if the model resolved the
+> report without asking (legitimate), and print each attempt. Each scenario prints PASS or FAIL,
 > the reply text, the path from the journal (node ids, `Decided` choice with confidence,
-> provider/model and latency, tool calls) and the latency. Exit status: 0 pass, 1 a scenario
+> provider/model and latency, tool calls, child-run nodes prefixed with their run id) and the
+> latency; a failure message carries the path taken. Exit status: 0 pass, 1 a scenario
 > failed, 2 a precondition is missing, 3 the overall timeout fired.
 
 ## Secrets

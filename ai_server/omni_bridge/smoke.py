@@ -62,9 +62,13 @@ from ..config import REPO_ROOT, settings
 logger = logging.getLogger(__name__)
 
 SCENARIOS = ("9.1", "9.2", "9.3", "9.4")
-#: A scenario that needs an earlier one's conversation (9.3 hands off from 9.2's intake, 9.4
-#: continues the conversation 9.3 ended).
-PREREQUISITES = {"9.1": (), "9.2": (), "9.3": ("9.2",), "9.4": ("9.2", "9.3")}
+#: A scenario that needs an earlier one's conversation: 9.4 continues the conversation 9.1 ended
+#: (a deterministic, Jev-routed one). 9.2 and 9.3 each open their own troubleshooting conversation,
+#: so a model that misbehaves in one cannot hide the other.
+PREREQUISITES = {"9.1": (), "9.2": (), "9.3": (), "9.4": ("9.1",)}
+
+#: What Alfred says when a run died silently (``client.WENT_WRONG``); matched loosely, lower case.
+WENT_WRONG_MARK = "something went wrong on my side"
 
 EXIT_OK, EXIT_FAIL, EXIT_PRECONDITION, EXIT_TIMEOUT = 0, 1, 2, 3
 
@@ -72,6 +76,21 @@ EXIT_OK, EXIT_FAIL, EXIT_PRECONDITION, EXIT_TIMEOUT = 0, 1, 2, 3
 START_TIMEOUT = 60.0
 #: Slack added to ``omni_turn_timeout`` for one bridge call (the bridge enforces its own).
 CALL_SLACK = 30.0
+#: The opener for 9.2 and 9.3. It names no device and no symptom, so the intake agent has nothing to
+#: look up and has to ask ("one of my sensors keeps going offline" was tried first: the model sometimes
+#: guessed a sensor by id instead of asking, and the Home Assistant list tool does not list sensors).
+AMBIGUOUS_OPENER = "something in the house is not working and I don't know what"
+#: The user's answer to the intake's question in 9.2: names the device and the symptom.
+INTAKE_ANSWER = "it's the garage motion sensor, it keeps going offline"
+
+#: Extra sensors seeded into the mock for the troubleshooting scenarios (state is per server
+#: instance, so nothing leaks into the shared fixture or other tests).
+EXTRA_SENSORS = {
+    "binary_sensor.garage_motion": ("Garage Motion", "unavailable"),
+    "binary_sensor.basement_motion": ("Basement Motion", "unavailable"),
+    "binary_sensor.front_door_contact": ("Front Door Contact", "off"),
+}
+
 #: Node ids that must NOT appear in a device-command run (9.1: "no chat model ran").
 CHAT_NODES = frozenset({"device-help", "chat", "clarify", "troubleshoot", "routine"})
 
@@ -106,10 +125,12 @@ def node_llm_choice(repo_root: Path) -> tuple[str, str, str]:
     except Exception as exc:  # unreadable manifest: say so, do not guess
         logger.warning("cannot read agent.yml: %s", type(exc).__name__)
     if settings.omni_node_provider:
-        provider, source = settings.omni_node_provider, "settings.omni_node_provider"
+        provider, source = settings.omni_node_provider, "OMNI_NODE_PROVIDER override"
         model = settings.omni_node_model or "(provider default)"
+        if settings.omni_node_model:
+            source = "OMNI_NODE_PROVIDER / OMNI_NODE_MODEL override"
     elif settings.omni_node_model:
-        model, source = settings.omni_node_model, ".omni/alfred/agent.yml + settings.omni_node_model"
+        model, source = settings.omni_node_model, "agent.yml provider + OMNI_NODE_MODEL override"
     return provider or "(unknown)", model or "(unknown)", source
 
 
@@ -156,6 +177,7 @@ class Observer:
     def __init__(self, client: Any) -> None:
         self._client = client
         self._cursor: dict[str, int] = {}
+        self._children: dict[str, list[str]] = {}
 
     async def _envelopes(self, stream_id: str) -> list[Any]:
         handle, stream = await self._client.attach(stream_id, since=0, deltas=False)
@@ -185,6 +207,7 @@ class Observer:
         envs = await self._envelopes(run_id)
         cursor = self._cursor.get(run_id, 0)
         current: Segment | None = None
+        visited: set[str] = set()
         by_call: dict[str, str] = {}
         for env in envs:
             if env.seq <= cursor:
@@ -194,6 +217,10 @@ class Observer:
                 current = Segment(event.node_id, run_id)
                 out.append(current)
                 if event.session_id and event.session_id.startswith("run-"):
+                    kids = self._children.setdefault(run_id, [])
+                    if event.session_id not in kids:
+                        kids.append(event.session_id)
+                    visited.add(event.session_id)
                     out.extend(await self.steps(event.session_id))
             elif isinstance(event, Decided):
                 seg = self._segment(out, event.node_id, run_id)
@@ -213,6 +240,10 @@ class Observer:
                 seg.outcome = event.outcome
         if envs:
             self._cursor[run_id] = envs[-1].seq
+        # A child run entered in an earlier call still moves: read what it added since.
+        for kid in self._children.get(run_id, []):
+            if kid not in visited:
+                out.extend(await self.steps(kid))
         return out
 
     @staticmethod
@@ -291,6 +322,7 @@ class Harness:
         self.mcp_patched = False
         self.jev_key_path = ""
         self.started_ids: list[str] = []
+        self.last_path = ""
 
     # -- preconditions -------------------------------------------------------
 
@@ -333,7 +365,8 @@ class Harness:
         provider, model, source = node_llm_choice(REPO_ROOT)
         has_key = provider_key_available(provider)
         key_note = {True: "key found", None: "no key needed / unknown", False: "NO KEY"}[has_key]
-        say_out(f"  node LLM       : {provider}/{model}  (from {source}; {key_note})")
+        say_out(f"  node LLM       : {provider}/{model}  (effective for every agent/tool node; "
+                f"from {source}; {key_note})")
         say_out("  decide nodes   : "
                 + ("typesafe/jev-latest (graph constraints)" if self.jev_on
                    else "typesafe/jev-latest requested by the graphs, falls back without a key"))
@@ -386,6 +419,7 @@ class Harness:
         from ..mcp.mock_ha import start_mock_ha
 
         self.mock_url, self.mock = start_mock_ha()
+        self.seed_ambiguity()
         settings.ha_url = self.mock_url
         settings.ha_token = "mock"
         say_out(f"mock Home Assistant at {self.mock_url}")
@@ -403,6 +437,18 @@ class Harness:
             self.observer = Observer(self.observer_client)
         except Exception as exc:
             say_out(f"note: journal observer unavailable ({type(exc).__name__}); paths will be blank")
+
+    def seed_ambiguity(self) -> None:
+        """Make "one of my sensors keeps going offline" genuinely ambiguous in the mock."""
+        states = self.mock.states
+        states["binary_sensor.hallway_motion"]["state"] = "unavailable"
+        for entity_id, (name, state) in EXTRA_SENSORS.items():
+            states[entity_id] = {
+                "entity_id": entity_id,
+                "state": state,
+                "attributes": {"friendly_name": name},
+                "last_changed": "2026-07-01T12:50:00+00:00",
+            }
 
     def _isolate(self) -> None:
         assert self.tmp is not None
@@ -518,6 +564,7 @@ class Harness:
         say_out(f"  reply  : {', '.join(flags)}  [{seconds:.1f}s]")
         rendered, segments = await self.path_of(reply.conversation_id)
         say_out(f"  path   : {rendered}")
+        self.last_path = rendered
         return segments
 
     def track(self, reply: Any) -> None:
@@ -557,6 +604,7 @@ class Harness:
             return
         r2, segs2, _ = await self.answer(r1, yes=True)
         sc.expect(r2.state == "ended", f"second reply state is {r2.state!r}, want ended")
+        ctx["r91"] = r2
         sc.expect(r2.conversation_id == r1.conversation_id, "the approval changed conversation id")
         sc.expect(" on" in r2.answer.lower(), "the final answer does not say the lamp is on")
         sc.expect(self.mock.states["light.bedroom_lamp"]["state"] == "on",
@@ -569,45 +617,101 @@ class Harness:
             sc.expect("typesafe" in decided_providers(segs1 + segs2),
                       "no Decided came from typesafe (Jev) although --jev was given")
 
+    async def late_path(self, conversation_id: str, seconds: float = 20.0) -> str:
+        """Diagnostics for a reply that came back too early: what the journal shows over the next
+        ``seconds`` (the run keeps going after a premature ``awaiting_user``), and the state the
+        bridge then lists the conversation in."""
+        parts: list[str] = []
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            await asyncio.sleep(2.0)
+            rendered, _ = await self.path_of(conversation_id)
+            if rendered not in ("(no new steps)", "(journal observer unavailable)"):
+                parts.append(rendered)
+        listed = [c for c in await self.bridge.list_conversations() if c.conversation_id == conversation_id]
+        state = listed[0].state if listed else "unlisted"
+        text = f"later the journal shows: {' > '.join(parts) or '(nothing)'}; listed as {state}"
+        say_out(f"  late   : {text}")
+        return text
+
+    async def ambiguous_intake(self, sc: Scenario, attempts: int = 1) -> Any | None:
+        """Open a troubleshooting conversation whose intake holds the floor with a question.
+
+        A model that reads the house and finds the culprit without asking is behaving legitimately,
+        so ``attempts`` fresh conversations are tried before giving up; each attempt that did not
+        ask is printed with its path, and a FAIL carries all of them. ``None`` when none held.
+        """
+        notes: list[str] = []
+        for attempt in range(1, attempts + 1):
+            text = AMBIGUOUS_OPENER
+            r, segs = await self.exchange(text, self.bridge.say(text, None))
+            front = [s for s in segs if s.node == "front" and s.run == r.conversation_id]
+            routed = front[0].outcome if front else "no front node"
+            if routed != "troubleshoot":
+                notes.append(f"attempt {attempt}: front routed {routed!r}; path: {self.last_path}")
+            elif r.state != "awaiting_user" or not r.answer.strip():
+                notes.append(f"attempt {attempt}: intake did not ask (state {r.state!r}, answer "
+                             f"{clip(r.answer, 120)!r}); path: {self.last_path}")
+            else:
+                if notes:
+                    say_out(f"  note   : held the floor on attempt {attempt} ({len(notes)} earlier "
+                            "attempt(s) resolved without asking)")
+                return r
+            say_out(f"  note   : {notes[-1].split('; path')[0]}")
+        sc.failures.append("no conversation held the floor with a question: " + " | ".join(notes))
+        return None
+
     async def s92(self, sc: Scenario, ctx: dict[str, Any]) -> None:
-        """9.2: a troubleshooting conversation reaches its intake and holds the floor."""
-        text = "the hallway sensor keeps going offline"
+        """9.2: an ambiguous report makes intake ask; the answer is taken and the run goes on."""
         say_out(f"[9.2] {sc.title}")
-        r, segs = await self.exchange(text, self.bridge.say(text, None))
-        ctx["r92"] = r
-        sc.expect(r.state == "awaiting_user", f"reply state is {r.state!r}, want awaiting_user")
-        sc.expect(bool(r.answer.strip()), "intake said nothing")
-        front = [s for s in segs if s.node == "front" and s.run == r.conversation_id]
-        sc.expect(front and front[0].outcome == "troubleshoot",
-                  f"front did not route troubleshoot ({front[0].outcome if front else 'no front node'})")
+        r1 = await self.ambiguous_intake(sc, attempts=2)
+        if r1 is None:
+            return
+        text = INTAKE_ANSWER
+        r2, segs = await self.exchange(text, self.bridge.say(text, r1.conversation_id))
+        sc.expect(r2.conversation_id == r1.conversation_id,
+                  f"the answer moved to conversation {r2.conversation_id!r}")
+        sc.expect(bool(r2.answer.strip()), f"nothing was said after the answer; path: {self.last_path}")
+        sc.expect(WENT_WRONG_MARK not in r2.answer.lower(),
+                  f"Alfred reported an internal failure; path: {self.last_path}")
+        intake = [s for s in segs if s.node == "intake"]
+        identified = any(s.outcome == "identified" for s in intake)
+        sc.expect(identified or r2.state == "awaiting_user",
+                  f"the answer neither identified the device nor got another question "
+                  f"(state {r2.state!r}); path: {self.last_path}")
 
     async def s93(self, sc: Scenario, ctx: dict[str, Any]) -> None:
         """9.3: a topic change inside the intake hands off to a new conversation."""
-        r92 = ctx["r92"]
-        text = "actually, forget that - turn on the coffee maker"
         say_out(f"[9.3] {sc.title}")
-        r, segs = await self.exchange(text, self.bridge.say(text, r92.conversation_id))
-        ctx["r93"] = r
-        sc.expect(r.new_conversation, "reply is not marked new_conversation")
-        sc.expect(r.continued_from == r92.conversation_id,
-                  f"continued_from is {r.continued_from!r}, want {r92.conversation_id!r}")
-        sc.expect(r.conversation_id != r92.conversation_id, "the handoff kept the old conversation id")
+        r0 = await self.ambiguous_intake(sc, attempts=3)
+        if r0 is None:
+            return
+        text = "actually, forget that - turn on the coffee maker"
+        r, segs = await self.exchange(text, self.bridge.say(text, r0.conversation_id))
+        if not r.new_conversation:
+            late = await self.late_path(r0.conversation_id)
+            sc.failures.append(
+                f"the handoff did not arrive with the reply (state {r.state!r}, same conversation); "
+                f"path: {self.last_path}; {late}")
+            return
+        sc.expect(r.continued_from == r0.conversation_id,
+                  f"continued_from is {r.continued_from!r}, want {r0.conversation_id!r}")
+        sc.expect(r.conversation_id != r0.conversation_id, "the handoff kept the old conversation id")
         sc.expect(r.state == "awaiting_approval", f"reply state is {r.state!r}, want awaiting_approval")
         sc.expect("coffee" in r.answer.lower(), "the approval question does not name the Coffee Maker")
         if r.pending is None:
-            sc.failures.append("no pending ask after the handoff")
+            sc.failures.append(f"no pending ask after the handoff; path: {self.last_path}")
             return
         r2, _, _ = await self.answer(r, yes=False)
         sc.expect(r2.state == "ended", f"after the refusal state is {r2.state!r}, want ended")
         sc.expect(self.mock.states["switch.coffee_maker"]["state"] == "off",
                   "the coffee maker was switched on although the ask was refused")
-        old = [c for c in await self.bridge.list_conversations() if c.conversation_id == r92.conversation_id]
+        old = [c for c in await self.bridge.list_conversations() if c.conversation_id == r0.conversation_id]
         sc.expect(old and old[0].state == "ended", "the first conversation is not listed as ended")
 
     async def s94(self, sc: Scenario, ctx: dict[str, Any]) -> None:
-        """9.4: an ended conversation is listed, readable, and can be continued."""
-        r92 = ctx["r92"]
-        cid = r92.conversation_id
+        """9.4: an ended conversation (9.1's) is listed, readable, and can be continued."""
+        cid = ctx["r91"].conversation_id
         say_out(f"[9.4] {sc.title}")
         listing = await self.bridge.list_conversations()
         say_out(f"  list   : {len(listing)} conversation(s): "
@@ -616,33 +720,34 @@ class Harness:
                   f"{cid} is not listed as ended")
         transcript = await self.bridge.transcript(cid)
         users = [e.text for e in transcript.entries if e.role == "user"]
-        say_out(f"  read   : transcript of {cid}: {len(transcript.entries)} entries, "
-                f"first user line {clip(users[0], 80)!r}" if users else f"  read   : transcript of {cid} is empty")
-        sc.expect(bool(users) and "hallway" in users[0].lower(), "the transcript lacks the first user line")
-        text = "it's offline again"
+        say_out(f"  read   : transcript of {cid}: {len(transcript.entries)} entries"
+                + (f", first user line {clip(users[0], 80)!r}" if users else ""))
+        sc.expect(bool(users) and "bedroom lamp" in users[0].lower(),
+                  "the transcript lacks the first user line")
+        # Wording-independent: only the plumbing is asserted (new run, linked, earlier text carried),
+        # not how the model routes or phrases the follow-up.
+        text = "that lamp keeps going offline"
         r, segs = await self.exchange(text, self.bridge.continue_from(cid, text))
         sc.expect(r.new_conversation, "reply is not marked new_conversation")
         sc.expect(r.continued_from == cid, f"continued_from is {r.continued_from!r}, want {cid!r}")
-        sc.expect(r.conversation_id not in (cid, ctx["r93"].conversation_id),
-                  "the continue reused an earlier conversation id")
-        sc.expect(r.state in ("awaiting_user", "awaiting_approval"),
-                  f"reply state is {r.state!r}, want awaiting_user or awaiting_approval")
-        front = [s for s in segs if s.node == "front" and s.run == r.conversation_id]
-        sc.expect(front and front[0].outcome == "troubleshoot",
-                  f"front did not route troubleshoot ({front[0].outcome if front else 'no front node'})")
+        sc.expect(r.conversation_id != cid, "the continue reused the earlier conversation id")
+        sc.expect(r.state in ("awaiting_user", "awaiting_approval", "ended"),
+                  f"reply state is {r.state!r}; path: {self.last_path}")
+        sc.expect(bool(r.answer.strip()), f"nothing was said; path: {self.last_path}")
+        sc.expect(WENT_WRONG_MARK not in r.answer.lower(),
+                  f"Alfred reported an internal failure; path: {self.last_path}")
         if self.observer is not None:
             earlier = (await self.observer.inputs(r.conversation_id)).get("earlier", "")
             say_out(f"  earlier: inputs.earlier is {len(str(earlier))} chars")
-            sc.expect(bool(str(earlier).strip()), "inputs.earlier is empty on the continued run")
-            sc.expect("hallway" in str(earlier).lower(),
+            sc.expect("bedroom lamp" in str(earlier).lower(),
                       "inputs.earlier does not carry the earlier conversation")
 
     async def run_scenarios(self) -> list[Scenario]:
         titles = {
             "9.1": "device command, no chat model: lamp on after an automatic yes",
-            "9.2": "troubleshooting: intake holds the floor",
-            "9.3": "topic change: hand off to a new conversation (refused ask)",
-            "9.4": "load an earlier conversation and continue it",
+            "9.2": "troubleshooting: ambiguous report, intake asks, the answer is taken",
+            "9.3": "topic change inside the intake: hand off to a new conversation (refused ask)",
+            "9.4": "load an earlier (ended) conversation and continue it",
         }
         funcs = {"9.1": self.s91, "9.2": self.s92, "9.3": self.s93, "9.4": self.s94}
         results: list[Scenario] = []
@@ -702,6 +807,9 @@ class Harness:
               f"home_assistant env has HA_URL={ha_env.get('HA_URL')} and JEV_KEY_FILE"
               f"{' (the real key file path)' if self.jev_on else ' (a file that does not exist)'}")
 
+        offline = sorted(k for k, v in self.mock.states.items()
+                         if k.startswith("binary_sensor.") and v["state"] == "unavailable")
+        check("ambiguity seeded", len(offline) >= 2, f"offline sensors in the mock: {', '.join(offline)}")
         check("mock HA reachable", await asyncio.to_thread(self._mock_ok), self.mock_url)
         check("daemon healthy", await self.bridge.healthy(), "list_runs answered")
         check("journal observer", self.observer is not None, "second client attached")

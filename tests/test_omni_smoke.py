@@ -16,7 +16,7 @@ def _harness(*argv: str) -> smoke.Harness:
 
 
 def test_only_pulls_in_prerequisites():
-    assert _harness("--only", "9.4").scenarios() == ["9.2", "9.3", "9.4"]
+    assert _harness("--only", "9.4").scenarios() == ["9.1", "9.4"]
     assert _harness("--only", "9.1").scenarios() == ["9.1"]
     assert _harness().scenarios() == list(smoke.SCENARIOS)
 
