@@ -3,8 +3,13 @@ Configuration management for AI Server.
 Supports environment variables and config files.
 """
 import os
-from typing import Optional
+from pathlib import Path
+from typing import Literal, Optional
 from pydantic_settings import BaseSettings
+
+# Absolute repo root, so defaults that point at repo files (plugins, the Jev key,
+# data/) resolve the same from any working directory (omni-jev plan, J21).
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class Settings(BaseSettings):
@@ -23,8 +28,8 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_file: Optional[str] = "ai_server.log"
     
-    # Plugin settings
-    plugins_dir: str = "plugins"
+    # Plugin settings (absolute default: plugins load from any cwd, J21)
+    plugins_dir: str = str(REPO_ROOT / "ai_server" / "plugins")
     auto_load_plugins: bool = True
     
     # Device mapping (room -> device mappings)
@@ -45,6 +50,22 @@ class Settings(BaseSettings):
     session_db_path: str = os.getenv("SESSION_DB_PATH", "alfred_sessions.db")
     session_timeout_minutes: int = int(os.getenv("SESSION_TIMEOUT_MINUTES", 30))
     session_history_limit: int = int(os.getenv("SESSION_HISTORY_LIMIT", 10))
+
+    # Omni / Jev (omni-jev plan). Settings only in A1; consumers arrive in later tasks.
+    # Jev key: raw key, no KEY= prefix. Read only through KeyFileCredential (J4/secrets).
+    jev_key_file: str = str(REPO_ROOT / "jev.env")
+    decision_provider: str = "typesafe"  # Omni decision provider
+    decision_model: str = "jev-latest"  # model id passed to the decision provider
+    resolve_threshold: float = 0.6  # minimum score for an entity resolve match
+    resolve_max_candidates: int = 200  # cap on candidates scored per resolve call
+    alfred_backend: Literal["omni", "core"] = "omni"  # which brain serves /execute
+    omni_front_graph: str = "front-door"  # graph under .omni/graphs/ the bridge runs
+    omni_node_provider: Optional[str] = None  # None = provider from the graph/node default
+    omni_node_model: Optional[str] = None  # None = model from the graph/node default
+    omni_ask_timeout: float = 300.0  # seconds a pending ask may wait for the user
+    omni_turn_timeout: float = 120.0  # seconds one turn may run before it is cut off
+    omni_earlier_chars: int = 6000  # char budget for earlier-turn context
+    data_dir: str = str(REPO_ROOT / "data")  # runtime state (sessions, bridge stores)
 
     # Speech to Text (Faster Whisper)
     whisper_model: str = os.getenv("WHISPER_MODEL", "tiny.en")

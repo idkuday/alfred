@@ -16,10 +16,19 @@ logger = logging.getLogger(__name__)
 # Initialize the LLM for the Forge
 # using the same model as router for now, but could be different
 llm = OllamaLLM(
-    model=settings.alfred_router_model, 
+    model=settings.alfred_core_model,
     temperature=0.2,
     num_predict=1024
 )
+
+
+def _is_approved(feedback: str) -> bool:
+    """True only when the reviewer's first line is exactly APPROVED (omni-jev J21).
+
+    A substring test let "NOT APPROVED" pass. An empty reply is not an approval.
+    """
+    lines = feedback.strip().splitlines()
+    return bool(lines) and lines[0].strip().upper() == "APPROVED"
 
 def research_node(state: ForgeState) -> Dict[str, Any]:
     """
@@ -225,7 +234,7 @@ def review_node(state: ForgeState) -> Dict[str, Any]:
     prompt = REVIEWER_PROMPT.format(code_draft=state["code_draft"])
     feedback = str(llm.invoke(prompt))
     
-    if "APPROVED" in feedback:
+    if _is_approved(feedback):
         logger.info("Forge: Code APPROVED.")
         return {"status": "complete", "review_comments": []}
     else:

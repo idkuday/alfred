@@ -5,7 +5,8 @@ import importlib
 import pkgutil
 import logging
 from pathlib import Path
-from typing import Dict, Type, List
+from typing import Dict, Type, List, Optional
+from ..config import settings
 from ..integration.base import DeviceIntegration
 
 logger = logging.getLogger(__name__)
@@ -13,9 +14,12 @@ logger = logging.getLogger(__name__)
 
 class PluginManager:
     """Manages loading and registration of plugins."""
-    
-    def __init__(self, plugins_dir: str = "plugins"):
-        self.plugins_dir = Path(plugins_dir)
+
+    def __init__(self, plugins_dir: Optional[str] = None):
+        # Default is this package's own directory, not the process cwd: a relative
+        # "plugins" path found zero plugins whenever Alfred was started outside the
+        # repo root (omni-jev plan J21).
+        self.plugins_dir = Path(plugins_dir) if plugins_dir else Path(__file__).parent
         self.integrations: Dict[str, DeviceIntegration] = {}
         self.plugins: Dict[str, any] = {}
     
@@ -59,8 +63,10 @@ class PluginManager:
         return list(self.integrations.keys())
 
 
-# Global plugin manager instance
-plugin_manager = PluginManager()
+# Global plugin manager instance. settings.plugins_dir defaults to this package's
+# directory (config.py), so PLUGINS_DIR still overrides it. No import cycle: config.py
+# imports nothing from ai_server.
+plugin_manager = PluginManager(settings.plugins_dir)
 
 
 
