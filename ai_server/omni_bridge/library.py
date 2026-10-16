@@ -138,6 +138,18 @@ def load_library(repo_root: Path, settings: Any) -> "tuple[GraphLibrary, dict[st
     return library, graphs
 
 
+def alias_ref(library: "GraphLibrary", old_ref: str, graph: "Graph") -> None:
+    """Make ``old_ref`` resolve to ``graph`` (A5b, J18).
+
+    A run pins the content hash of the graph it started with, and the hash covers the injected
+    house constraints, so a changed setting gives the same graph a new ref. To keep driving
+    such a run with the graph of the same name, the old ref is pointed at it. ``GraphLibrary``
+    has no public way to register a second ref for one graph, hence the write to its map; the
+    graph's own ``ref`` (what new runs and walker state use) is unchanged.
+    """
+    library._by_ref[old_ref] = graph  # noqa: SLF001 - see the docstring
+
+
 def write_local_mcp_config(repo_root: Path) -> Path:
     """Generate ``.omni/mcp.local.json`` from ``.omni/mcp.json`` (J7) and return its path.
 

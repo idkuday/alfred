@@ -75,6 +75,11 @@ class Item:
     #: The stream the text came from and its seq there (what ``spoken(since=...)`` filters on).
     stream_id: str
     seq: int
+    #: Handoff suppression (rule 4, J10): said by a terminal speaker that exited ``new-request``.
+    #: ``spoken`` leaves it out of the *reply* (the handoff's first reply is what the person
+    #: hears); ``walk`` keeps it, so the transcript and the ``earlier`` seed still hold what
+    #: Alfred said (A5b).
+    suppressed: bool = False
 
 
 def is_speaker(node: Node) -> bool:
@@ -120,8 +125,6 @@ def _session_items(
     items: list[Item] = []
 
     if node.kind == "tool":
-        if suppressed:
-            return []
         for env in envelopes:
             event = env.event
             if isinstance(event, CallEnded):
@@ -130,7 +133,9 @@ def _session_items(
                 else:
                     text = error_phrase(event.content, event.outcome)
                 if text.strip():
-                    items.append(Item("assistant", text, node.id, env.ts, stream_id, env.seq))
+                    items.append(
+                        Item("assistant", text, node.id, env.ts, stream_id, env.seq, suppressed)
+                    )
         return items
 
     roles: dict[str, str] = {}
@@ -147,10 +152,10 @@ def _session_items(
                 continue
             role = roles.get(event.msg_id)
             if role == "assistant":
-                if not suppressed:
-                    items.append(
-                        Item("assistant", event.content, node.id, env.ts, stream_id, env.seq)
-                    )
+                items.append(
+                    Item("assistant", event.content, node.id, env.ts, stream_id, env.seq,
+                         suppressed)
+                )
             elif role == "user" and node.converse:
                 if first_user is None:
                     first_user = event.msg_id  # the kernel's seed prompt, never shown
@@ -242,6 +247,9 @@ def spoken(
 ) -> list[str]:
     """What Alfred says now: assistant texts in journal order (section 7.5).
 
+    Items marked ``suppressed`` (a terminal speaker that handed off) are left out: that is
+    rule 4, and it applies to this reply only, never to ``walk`` (the transcript).
+
     ``since`` maps stream id -> the last seq seen there when ``say()`` submitted its work;
     only text journaled after that is returned, so earlier turns are not repeated.
     """
@@ -249,7 +257,9 @@ def spoken(
     return [
         item.text
         for item in walk(run_envelopes, child_runs, session_streams, library)
-        if item.role == "assistant" and item.seq > cutoff.get(item.stream_id, 0)
+        if item.role == "assistant"
+        and not item.suppressed
+        and item.seq > cutoff.get(item.stream_id, 0)
     ]
 
 

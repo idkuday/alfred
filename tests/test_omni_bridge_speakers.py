@@ -105,7 +105,33 @@ def test_handoff_speakers_are_suppressed_but_a_nonterminal_converse_still_speaks
     s = Story().start().intake_asks().bye(spoken="Sure, switching.")
     # say-bye is terminal and exited new-request: silent. intake is not terminal: it spoke.
     assert _spoken(s) == ["Is it the motion sensor by the front door?"]
-    assert "Sure, switching." not in [i.text for i in _walk(s)]
+    # ... but only the REPLY is silenced (A5b): the walk (transcript, `earlier`) keeps the words,
+    # marked, so the next run knows what Alfred said.
+    said = {i.text: i.suppressed for i in _walk(s) if i.role == "assistant"}
+    assert said == {"Is it the motion sensor by the front door?": False, "Sure, switching.": True}
+
+
+def test_a_terminal_converse_nodes_earlier_turns_stay_in_the_walk_but_not_the_reply():
+    # chat (terminal, converse) talks for two turns, then exits new-request.
+    j = Journal()
+    lib = library()
+    j.add("run-1", RunStarted("run-1", "graph", "front-door", {"message": "hi"}))
+    j.add("run-1", NodeEntered("run-1", "chat", "sess-chat"))
+    j.message("sess-chat", "user", "SEED")
+    j.message("sess-chat", "assistant", "What would you like to do?")
+    j.message("sess-chat", "user", "actually, the lamp")
+    j.message("sess-chat", "assistant", "Sure.")
+    env = j.call("sess-chat", "turn on the lamp", name="emit_outcome")
+    j.add("run-1", NodeExited("run-1", "chat", "new-request", f"sess-chat#{env.seq}"))
+    j.add("run-1", RunEnded("run-1", "completed"))
+    items = speakers.walk(j.streams["run-1"], {}, j.streams, lib)
+    assert [(i.role, i.text) for i in items] == [
+        ("user", "hi"),
+        ("assistant", "What would you like to do?"),
+        ("user", "actually, the lamp"),
+        ("assistant", "Sure."),
+    ]
+    assert speakers.spoken(j.streams["run-1"], {}, j.streams, lib) == []
 
 
 def test_terminal_speaker_without_handoff_is_not_suppressed():
