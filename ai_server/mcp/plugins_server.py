@@ -20,18 +20,14 @@ around here.
 
 A note on plugins_dir
 ----------------------
-``ai_server.plugins.plugin_manager`` (the module-level singleton
-``main.py`` uses) is constructed with the default ``plugins_dir="plugins"``,
-which is relative to the process's current working directory and does
-**not** point at ``ai_server/plugins/`` — running it from the repo root
-finds zero plugins (confirmed while building this: ``PluginManager()``
-default logs "Plugins directory plugins does not exist" and loads nothing).
-That is a pre-existing property of ``ai_server/plugins/__init__.py``,
-unrelated to and out of scope for this task, so it is not touched. What this
-module does instead is construct its **own** ``PluginManager`` — same
-unmodified class, using the ``plugins_dir`` constructor parameter it already
-has — pointed at the real package directory, resolved relative to this
-file rather than the CWD.
+``ai_server.plugins.PluginManager`` now defaults to its own package directory
+(``ai_server/plugins/``) rather than the process's working directory, and
+``settings.plugins_dir`` is an absolute path to it (omni-jev plan, A1/J21), so
+the module-level ``plugin_manager`` ``main.py`` uses finds the same plugins
+from any cwd. This server still constructs its **own** ``PluginManager`` — the
+same unmodified class — pointed explicitly at ``_DEFAULT_PLUGINS_DIR`` (resolved
+relative to this file) or at ``--plugins-dir``, so a stray ``PLUGINS_DIR``
+environment variable cannot change which plugins this sidecar exposes.
 
 A generic tool per plugin, because that is what the interface offers
 ----------------------------------------------------------------------

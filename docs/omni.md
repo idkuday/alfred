@@ -16,16 +16,53 @@ The design and its decisions are in [omni-jev-plan.md](omni-jev-plan.md).
 `.omni/mcp.json` declares `home_assistant` and `alfred_plugins`, with grades: Home
 Assistant writes are `physical` (ask every call), reads are `read`.
 
-> **Planned (omni-jev, A2/A4).** Both servers get `"cwd": ".."`; the bridge generates the
-> git-ignored `.omni/mcp.local.json` with Alfred's venv Python and the absolute repo root
-> (J7). Plugin grades use the prefixed per-server names; plugin `*_execute_command` is
-> `physical`.
+> **As built (omni-jev, A2).** Both servers carry `"cwd": ".."` (resolved against the file's
+> directory, i.e. the repo root), so `omni --mcp` from a shell finds the `ai_server` package.
+> Plugin grades use the per-server prefixed names, one set per plugin in `ai_server/plugins/`
+> (`<slug>_get_device_info`, `_discover_devices`, `_health_check` are `read`;
+> `<slug>_execute_command` is `physical`). `home_assistant` keeps `grade: physical` as the
+> server default, so a tool without its own entry asks every call. `tests/test_mcp_json_grades.py`
+> fails if either server exposes a tool the file does not grade, or lists one it no longer
+> exposes. **Adding a plugin means adding its four slugged entries to `mcp.json`.**
+
+> **Planned (omni-jev, A4).** The bridge generates the git-ignored `.omni/mcp.local.json` from
+> this file with Alfred's venv Python and the absolute repo root (J7).
 
 ## Home Assistant tools
 
-> **Planned (omni-jev, A2).** New tools `resolve_entity` (read; Jev `choice` over the live
-> entity list, inside the server via `ai_server/decisions.py`), `apply` (physical; takes
-> `resolve_entity`'s output whole as `target`) and `describe` (read). See the plan §6.
+> **As built (omni-jev, A2).** Besides the existing `turn_on`, `turn_off`, `toggle`,
+> `set_brightness`, `set_temperature`, `get_state`, `list_entities` and `health_check`, the
+> server (`ai_server/mcp/home_assistant_server.py`) exposes the LLM-free device path (J4):
+>
+> | Tool | Grade | Takes | Returns |
+> |---|---|---|---|
+> | `resolve_entity` | read | `request`, `action` (`turn-on`, `turn-off`, `toggle`, `status`) | JSON object `{"outcome": "resolved"\|"ambiguous"\|"none", "output": {...}}` |
+> | `apply` | physical | `action` (`turn-on`, `turn-off`, `toggle`), `target`, `request` | one sentence, `Bedroom Lamp is on.`; errors are `isError` results |
+> | `describe` | read | `target` | one sentence, `Bedroom Lamp is off (last changed 14:02).` |
+>
+> `resolve_entity` lists the devices that support the action (`status` also looks at
+> `sensor`, `binary_sensor` and `lock`). No candidates: `none` (`reason: no matching devices`).
+> Exactly one: `resolved` with confidence 1.0, no model call. More than
+> `settings.resolve_max_candidates` (200): `ambiguous`, `reason: too many devices`. Otherwise
+> one Jev `choice` question through `ai_server/decisions.py` (`choose`, threshold
+> `settings.resolve_threshold`), whose options are `entity_id` -> `<name> - <domain>, currently
+> <state>`. A confident answer is `resolved` with `{entity_id, entity_name, domain,
+> confidence}`; anything else (below threshold, model error, no key file, omni not importable)
+> is `ambiguous` with `candidates` (the first five entity ids), which the graph routes to the
+> LLM device agent. The tools never raise on a missing key.
+>
+> A tool node's output cannot be indexed, so `resolve_entity`'s `output` is passed **whole**
+> as the string `target` of `apply` / `describe`, which parse it (an object with `entity_id`
+> and `entity_name`). The permission prompt for `apply` therefore shows the resolved
+> device's name. `apply` reports the state Home Assistant returned after the call.
+>
+> `ai_server/decisions.py` is the one door to a decision model (J5): `get_decision_model()`
+> (a cached `TypeSafeDecision` on `KeyFileCredential(settings.jev_key_file)`, or `None`),
+> `choose(question, options, state, *, threshold)` -> `(answer | None, confidence)` (never
+> raises; logs only the exception class) and `close()`. `ai_server/mcp/mock_ha.py` is the
+> shared mock Home Assistant (`start_mock_ha() -> (url, server)`, per-server `states`; service
+> calls really change state) used by the unit tests and `python -m ai_server.mcp.smoke_test`,
+> which drives both servers through omni's own MCP client (the `omni` installed in the venv).
 
 ## Conversations
 
