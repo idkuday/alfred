@@ -2,48 +2,20 @@
 
 A modular, privacy-focused AI assistant for smart home automation. Alfred runs entirely on your local network -- all LLM inference, speech-to-text, and text-to-speech happen on-device via [Ollama](https://ollama.com), [Faster Whisper](https://github.com/SYSTRAN/faster-whisper), and [Piper TTS](https://github.com/rhasspy/piper). No cloud dependencies.
 
-## Architecture
+## Alfred on Omni
 
-```
-User (Text / Voice)
-        |
-        v
- +--------------+      +------------------+
- | React Chat UI| ---> |  FastAPI Server   |
- |  (alfred-ui) |      |    (ai_server)    |
- +--------------+      +--------+---------+
-                                |
-         +----------------------+----------------------+
-         |                      |                      |
-    AlfredCore           Session Memory        STT / TTS
-   (Ollama LLM)         (SQLite)            Whisper + Piper
-         |
-    +----+----+
-    |         |
-call_tool  conversation
-    |         |
-    v         v
-Integration   Direct
-   Layer      Response
-    |
-    +------+------+
-    |             |
-Home Assistant  Plugins
-  (local)      (auto-loaded)
-```
+Alfred's conversations run on omni-kernel through the `omni` backend, the default (`ALFRED_BACKEND=omni`). Each conversation is one run of the `front-door` graph, and Jev makes the device decisions through Omni's decide nodes.
 
-### How It Works
+- [docs/architecture.md](docs/architecture.md): how Alfred is built today.
+- [docs/omni.md](docs/omni.md): setup (including the one-time Jev key step), the bridge, conversations and the smoke test.
+- [docs/graphs.md](docs/graphs.md): each graph node by node.
 
-AlfredCore uses a local LLM (Qwen 2.5 3B via Ollama) to handle all requests in a **single LLM call**. The model decides whether to respond conversationally (plain text) or invoke a tool (JSON):
-
-- **Plain text** -- Conversation, questions, jokes, help -- Alfred responds directly
-- **`call_tool` (JSON)** -- Execute a command via Home Assistant or a plugin
-- **`propose_new_tool` (JSON)** -- Suggest a new plugin (non-executable, requires human approval)
+The older AlfredCore path (one Ollama call per request, `ALFRED_BACKEND=core`) is still in the tree until the user retires it. The root `ARCHITECTURE.md` and `CODEBASE_SUMMARY.md` describe that older design and are stale.
 
 ## Features
 
 - **Local-First & Private** -- All processing on your hardware, no cloud APIs
-- **AlfredCore** -- Unified LLM brain (single call for both routing and conversation)
+- **Alfred on Omni** -- Conversation graphs hosted by omni-kernel (`ALFRED_BACKEND=omni`, default); AlfredCore is the older `core` backend
 - **Home Assistant Integration** -- Control lights, switches, fans, climate, covers
 - **Plugin System** -- Auto-loaded plugins extend Alfred's capabilities
 - **Speech-to-Text** -- Offline transcription via Faster Whisper

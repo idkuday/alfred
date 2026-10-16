@@ -37,10 +37,14 @@ alfred-ui / voice ──HTTP──► FastAPI (ai_server/main.py)
 >
 > Whisper, Piper and `/devices` do not depend on the backend.
 
-> **Planned (omni-jev, A5/A9).** `AlfredOmni` itself (`omni_bridge/client.py`: each
-> conversation is one run of the `front-door` graph, hosted in-process by `GraphHost`,
-> nodes executed by `omnid`) lands with A5. A9, deferred, would delete AlfredCore, the
-> intent processor, `alfred_router/` and the SQLite session store (J15).
+> **As built (omni-jev, A5).** `AlfredOmni` (`omni_bridge/client.py`): each conversation is
+> one run of the `front-door` graph, hosted in-process by `GraphHost`, with nodes executed by
+> `omnid`.
+>
+> **Not built (omni-jev, A9): deferred to the user by the coordinator (J15).** AlfredCore
+> (`ai_server/core/`), the intent processor, `alfred_router/` and the SQLite session store
+> (`ai_server/memory/`) are still in the tree. Nothing deletes them. `alfred_backend = "core"`
+> keeps AlfredCore reachable. A9 runs only when the user asks for it (see §12 of the plan).
 
 ## Configuration
 

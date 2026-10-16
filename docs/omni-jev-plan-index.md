@@ -1,5 +1,7 @@
 # Index for omni-jev-plan.md
 
+> **Status:** built on `feat/omni-jev` except A9 (AlfredCore deletion), which is deferred to the user. §12 of `omni-jev-plan.md` records what was built and every deviation.
+
 `omni-jev-plan.md` (same folder, about 1165 lines) is the plan for the `feat/omni-jev`
 branch: Alfred as a graph-bodied system on omni-kernel with Jev deciding the path.
 

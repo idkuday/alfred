@@ -1,5 +1,7 @@
 # System Architecture
 
+> **Stale — see docs/.** This describes the pre-Omni AlfredRouter/AlfredCore design. Current: [docs/architecture.md](docs/architecture.md). Running on Omni: [docs/omni.md](docs/omni.md). Graphs: [docs/graphs.md](docs/graphs.md).
+
 ## Overview
 
 Alfred is a local-first smart home AI assistant built with FastAPI, Ollama (local LLMs), Faster Whisper (STT), and Piper TTS. It integrates with Home Assistant and is extensible via auto-loaded plugins. A multi-agent system ("The Forge") can generate new plugins on the fly.
