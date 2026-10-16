@@ -127,10 +127,23 @@ Assistant writes are `physical` (ask every call), reads are `read`.
 >   edited.
 > - **When `say()` returns** (`quiescence.state_of`): `ended` when the root run ended;
 >   `awaiting_approval` when any run has an unanswered `Request`; `awaiting_user` when a run
->   holds the floor and that session's latest turn has ended. `FloorHeld` is written once per
->   node entry, not per reply, so the rule is the fold plus the session's last turn, never the
->   event alone. Right after prompting a floor session, pass `since` so the previous (ended)
->   turn is not mistaken for the answer.
+>   holds the floor and that session's latest turn has ended **without calling
+>   `emit_outcome`** (fixed in A5c). `FloorHeld` is written once per node entry, not per
+>   reply, so the rule is the fold plus the session's last turn, never the event alone. Right
+>   after prompting a floor session, pass `since` so the previous (ended) turn is not
+>   mistaken for the answer.
+>
+>   A floor node's turn that ended after a successful `emit_outcome` is *leaving*
+>   (`TurnState.leaving`, read from the `CallStarted`/`CallEnded` of `emit_outcome` in that
+>   turn). The kernel records the turn's end before it harvests the outcome and writes
+>   `NodeExited`, and until then the fold still shows the floor, so such a turn used to read
+>   as `awaiting_user` (live: "forget that, turn on the coffee maker" came back with the
+>   intake's goodbye and the handoff never ran). Now it is never `awaiting_user`: `say()`
+>   keeps reading until the node exits and the walk parks again (another floor or an ask),
+>   the run ends (then the J10 handoff runs inside the same call, reply `session_id` = the
+>   new run, `continued_from` = the old), or `omni_turn_timeout` returns `working`. A
+>   refused `emit_outcome` routes nothing and so still leaves the floor with the person.
+>   No sleep or settle is involved; the journal decides.
 >
 > **As built (omni-jev, A5).** `AlfredOmni.say(text, conversation_id)` routes per plan section 7.8:
 >

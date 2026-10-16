@@ -225,6 +225,22 @@ class Story:
         j.add("run-2", NodeExited("run-2", "intake", outcome, f"sess-intake#{env.seq}"))
         return self
 
+    def intake_turn_with_outcome(
+        self, text: str = "actually, forget that", output: str = "turn off the kitchen light",
+        spoken: str = "Okay, dropping that.", *, ok: bool = True,
+    ) -> "Story":
+        """The person speaks and intake's turn ends *after* ``emit_outcome``, with no
+        ``NodeExited`` yet (the kernel writes it a moment later, A5c). ``ok=False``: the
+        call was refused, so the node stays and the floor is still the person's."""
+        j = self.j
+        j.message("sess-intake", "user", text)
+        j.add("sess-intake", TurnStarted("t-next", TurnCause.USER))
+        j.message("sess-intake", "assistant", spoken)
+        j.call("sess-intake", output, CallOutcome.OK if ok else CallOutcome.ERR,
+               name="emit_outcome")
+        j.add("sess-intake", TurnEnded("t-next", "end_turn", {}))
+        return self
+
     def inspect(self, notes: str = "INTERNAL: zigbee2mqtt shows 3 reconnects") -> "Story":
         j = self.j
         j.add("run-2", NodeEntered("run-2", "inspect", "sess-inspect"))

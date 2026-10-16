@@ -424,6 +424,143 @@ async def test_a_topic_change_seeds_the_new_run_with_both_sides_of_the_old_talk(
     ]
 
 
+def outcome_turn(k: FakeKernel, text: str, spoken: str, output: str, outcome: str):
+    """The person speaks; intake says goodbye, calls emit_outcome and its turn ENDS.
+
+    The kernel writes `TurnEnded` first and `NodeExited` only when it next looks at the
+    session, so the exit is left to the caller (A5c).
+    """
+    k.message("sess-intake", "user", text)
+    k.add("sess-intake", TurnStarted("t-next", TurnCause.USER))
+    k.message("sess-intake", "assistant", spoken)
+    env = k.call("sess-intake", output, name="emit_outcome")
+    k.add("sess-intake", TurnEnded("t-next", "end_turn", {}))
+    return env
+
+
+def intake_exits_to_bye(k: FakeKernel, env, new_request: str) -> None:
+    """What the kernel journals later: intake exits, say-bye speaks, both runs end."""
+    k.add("run-2", NodeExited("run-2", "intake", "new-request", f"sess-intake#{env.seq}"))
+    k.stream("sess-bye")
+    k.add("run-2", NodeEntered("run-2", "say-bye", "sess-bye"))
+    k.message("sess-bye", "assistant", "Sure, switching.")
+    env2 = k.call("sess-bye", new_request, name="emit_outcome")
+    k.add("run-2", NodeExited("run-2", "say-bye", "new-request", f"sess-bye#{env2.seq}"))
+    k.add("run-2", RunEnded("run-2", "completed"))
+    k.add("run-1", NodeExited("run-1", "troubleshoot", "new-request", f"sess-bye#{env2.seq}"))
+    k.add("run-1", RunEnded("run-1", "completed"))
+
+
+async def test_an_outcome_turn_waits_for_the_exit_and_hands_off_in_the_same_say(started, repo):
+    """A5c / A7b live bug: intake's turn ends after emit_outcome; NodeExited lands later."""
+    bridge, k = started
+    loop = asyncio.get_running_loop()
+
+    def on_start(run_id, inputs):
+        if run_id == "run-1":
+            troubleshoot_run(k, run_id, repo)
+        else:
+            device_run(k, run_id)
+
+    def on_prompt(sid, text):
+        env = outcome_turn(k, text, "Okay, dropping that.", "turn on the bedroom lamp",
+                           "new-request")
+        loop.call_later(0.15, intake_exits_to_bye, k, env, "turn on the bedroom lamp")
+
+    k.on_start = on_start
+    first = await bridge.say("the hallway sensor keeps going offline", None)
+    assert first.state == "awaiting_user"
+    k.on_prompt = on_prompt
+    reply = await bridge.say("actually, forget that - turn on the bedroom lamp", "run-1")
+    # not an early awaiting_user with the goodbye: the handoff ran inside this say()
+    assert reply.state == "awaiting_approval"
+    assert reply.conversation_id == "run-3" and reply.continued_from == "run-1"
+    assert reply.new_conversation
+    # intake is not terminal, so it still speaks its last words (A4); say-bye is silent
+    assert reply.answer == "Okay, dropping that." + chr(10) * 2 + "Shall I turn on Bedroom Lamp?"
+    assert k.started[1]["inputs"]["message"] == "turn on the bedroom lamp"
+    assert "run-1" not in bridge._convs and "run-3" in bridge._convs
+
+
+async def test_a_plain_turn_without_an_outcome_is_awaiting_user_at_once(started, repo):
+    bridge, k = started
+    loop = asyncio.get_running_loop()
+    k.on_start = lambda run_id, inputs: troubleshoot_run(k, run_id, repo)
+    await bridge.say("the hallway sensor keeps going offline", None)
+
+    def on_prompt(sid, text):
+        k.message("sess-intake", "user", text)
+        k.add("sess-intake", TurnStarted("t-next", TurnCause.USER))
+        k.message("sess-intake", "assistant", "Is it the zigbee one?")
+        k.add("sess-intake", TurnEnded("t-next", "end_turn", {}))  # no emit_outcome
+        # if the bridge wrongly kept waiting, this would arrive and change the reply
+        loop.call_later(0.3, k.add, "run-2", RunEnded("run-2", "completed"))
+        loop.call_later(0.3, k.add, "run-1", RunEnded("run-1", "completed"))
+
+    k.on_prompt = on_prompt
+    t0 = loop.time()
+    reply = await bridge.say("yes, the hallway one", "run-1")
+    assert loop.time() - t0 < 0.25
+    assert reply.state == "awaiting_user" and reply.answer == "Is it the zigbee one?"
+    assert reply.conversation_id == "run-1" and not reply.new_conversation
+    assert len(k.started) == 1
+
+
+async def test_an_outcome_turn_that_moves_on_waits_for_the_next_park(started, repo):
+    """9.2: the answer makes intake=identified and inspect starts; not an early reply."""
+    bridge, k = started
+    loop = asyncio.get_running_loop()
+    k.on_start = lambda run_id, inputs: troubleshoot_run(k, run_id, repo)
+    await bridge.say("the hallway sensor keeps going offline", None)
+
+    def finish(env):
+        k.add("run-2", NodeExited("run-2", "intake", "identified", f"sess-intake#{env.seq}"))
+        k.stream("sess-inspect")
+        k.add("run-2", NodeEntered("run-2", "inspect", "sess-inspect"))
+        loop.call_later(0.15, report_and_end)
+
+    def report_and_end():
+        k.add("run-2", NodeExited("run-2", "inspect", "found"))
+        k.stream("sess-report")
+        k.add("run-2", NodeEntered("run-2", "say-report", "sess-report"))
+        env = k.message("sess-report", "assistant", "It was the Zigbee integration.")
+        k.add("run-2", NodeExited("run-2", "say-report", "done", f"sess-report#{env.seq}"))
+        k.add("run-2", RunEnded("run-2", "completed"))
+        k.add("run-1", NodeExited("run-1", "troubleshoot", "done", f"sess-report#{env.seq}"))
+        k.add("run-1", RunEnded("run-1", "completed"))
+
+    def on_prompt(sid, text):
+        env = outcome_turn(k, text, "Thanks, I'll take a look.", "hallway_motion offline",
+                           "identified")
+        loop.call_later(0.1, finish, env)
+
+    k.on_prompt = on_prompt
+    reply = await bridge.say("yes, the zigbee one", "run-1")
+    assert reply.state == "ended"
+    assert reply.answer.endswith("It was the Zigbee integration.")
+
+
+async def test_an_outcome_turn_that_never_parks_again_times_out_as_working(repo, tmp_path):
+    k = FakeKernel()
+    bridge = make(repo, k, omni_turn_timeout=0.3)
+    await bridge.start()
+    try:
+        k.on_start = lambda run_id, inputs: troubleshoot_run(k, run_id, repo)
+        await bridge.say("the hallway sensor keeps going offline", None)
+
+        def on_prompt(sid, text):
+            env = outcome_turn(k, text, "Thanks.", "hallway_motion offline", "identified")
+            k.add("run-2", NodeExited("run-2", "intake", "identified", f"sess-intake#{env.seq}"))
+            k.stream("sess-inspect")
+            k.add("run-2", NodeEntered("run-2", "inspect", "sess-inspect"))  # then silence
+
+        k.on_prompt = on_prompt
+        reply = await bridge.say("yes", "run-1")
+        assert reply.state == "working" and reply.conversation_id == "run-1"
+    finally:
+        await bridge.close()
+
+
 async def test_loading_an_earlier_conversation_that_handed_off_keeps_alfreds_words(
     started, repo
 ):

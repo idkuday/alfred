@@ -4,7 +4,7 @@ import pytest
 
 pytest.importorskip("omni")
 
-from omni.kernel.events import SessionEnded, TurnEnded, TurnStarted  # noqa: E402
+from omni.kernel.events import NodeExited, RunEnded, SessionEnded, TurnEnded, TurnStarted  # noqa: E402
 from omni.kernel.events import TurnCause  # noqa: E402
 from omni.kernel.runs.fold import fold_run  # noqa: E402
 
@@ -113,3 +113,67 @@ def test_a_child_run_that_ended_does_not_hold_the_floor():
     s = Story().start().intake_asks().intake_exits().report(end=False)
     # intake exited: the floor is gone, and nothing else is parked.
     assert _state(s) is None
+
+
+# -- a turn that called emit_outcome is leaving, not asking (A5c) --
+
+
+def test_turn_state_notices_a_successful_emit_outcome_in_the_latest_turn_only():
+    s = Story().start().intake_asks().intake_turn_with_outcome()
+    turn = q.turn_state(s.sessions["sess-intake"])
+    assert turn.over and turn.outcome and turn.leaving
+    plain = q.turn_state(Story().start().intake_asks().sessions["sess-intake"])
+    assert plain.over and not plain.outcome and not plain.leaving
+    # a refused emit_outcome routes nothing (the kernel's harvest ignores it too)
+    refused = Story().start().intake_asks().intake_turn_with_outcome(ok=False)
+    assert not q.turn_state(refused.sessions["sess-intake"]).leaving
+    # an outcome in an earlier turn is not carried into a later one
+    j = Journal()
+    j.add("s", TurnStarted("t1", TurnCause.USER))
+    j.call("s", "bye", name="emit_outcome")
+    j.add("s", TurnEnded("t1", "end_turn", {}))
+    j.add("s", TurnStarted("t2", TurnCause.USER))
+    j.add("s", TurnEnded("t2", "end_turn", {}))
+    assert not q.turn_state(j.streams["s"]).outcome
+
+
+def test_an_open_turn_that_already_called_emit_outcome_is_not_over_or_leaving():
+    j = Journal()
+    j.add("s", TurnStarted("t1", TurnCause.USER))
+    j.call("s", "bye", name="emit_outcome")
+    assert not q.turn_state(j.streams["s"]).leaving  # TurnEnded has not come yet
+
+
+def test_a_floor_turn_that_emitted_an_outcome_is_never_awaiting_user():
+    """The A7b bug: turn over + floor still in the fold, but NodeExited has not landed."""
+    s = Story().start().intake_asks().intake_turn_with_outcome()
+    assert _state(s) is None
+    # also with the stale-turn guard satisfied
+    assert _state(s, since={"sess-intake": 1}) is None
+
+
+def test_after_the_outcome_the_walk_decides_what_the_state_is():
+    s = Story().start().intake_asks().intake_turn_with_outcome()
+    s.j.add("run-2", NodeExited("run-2", "intake", "identified", "sess-intake#1"))
+    assert _state(s) is None  # floor cleared, inspect not entered yet
+    s.inspect()
+    assert _state(s) is None  # 9.2: inspect working, not a park
+    s.report(end=False)
+    assert _state(s) is None
+    s.j.add("run-2", RunEnded("run-2", "completed"))
+    s.j.add("run-1", RunEnded("run-1", "completed"))
+    assert _state(s) == "ended"
+
+
+def test_an_outcome_turn_then_a_new_park_is_that_park():
+    s = Story().start().intake_asks().intake_turn_with_outcome()
+    s.j.add("run-2", NodeExited("run-2", "intake", "identified", "sess-intake#1"))
+    s.ask_permission()
+    assert _state(s) == "awaiting_approval"
+    s.answer("once")
+    assert _state(s) is None
+
+
+def test_a_refused_emit_outcome_leaves_the_floor_with_the_person():
+    s = Story().start().intake_asks().intake_turn_with_outcome(ok=False)
+    assert _state(s) == "awaiting_user"
