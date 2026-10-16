@@ -298,7 +298,7 @@ Assistant writes are `physical` (ask every call), reads are `read`.
 
 ## Smoke test
 
-> **As built (omni-jev, A7, A7b).** `ai_server/omni_bridge/smoke.py` drives plan sections 9.1 to 9.4
+> **As built (omni-jev, A7, A7b, A7c).** `ai_server/omni_bridge/smoke.py` drives plan sections 9.1 to 9.4
 > through a real omni daemon and the real `front-door` graph, with Alfred's Home Assistant MCP
 > server pointed at the **mock** Home Assistant (no real house). Run from the repo root:
 >
@@ -336,22 +336,24 @@ Assistant writes are `physical` (ask every call), reads are `read`.
 > The daemon is stopped and the temp directory removed on every exit path, and `mcp.local.json`
 > is regenerated clean.
 >
-> Scenarios (the mock is seeded with several offline sensors, so a report that names no device
-> is genuinely ambiguous): **9.1** "turn on the bedroom lamp" then an automatic yes (words through
-> Jev with `--jev`, otherwise `answer_ask(allow)`), checking no chat node ran and the mock's lamp is
-> on; **9.2** "something in the house is not working and I don't know what" makes intake ask, then
-> "it's the garage motion sensor, it keeps going offline" is taken (the conversation continues:
-> same id, `intake=identified` or another question); **9.3** the same opener in a fresh
-> conversation, then "actually, forget that - turn on the coffee maker" must arrive with the reply
-> as a new conversation (`continued_from`, `new_conversation`, an approval ask) that is then refused
-> (the mock stays off); **9.4** 9.1's ended conversation is listed `ended`, its transcript is
-> readable, and `continue_from("that lamp keeps going offline")` starts a new linked run whose
-> `inputs.earlier` carries it. 9.4 asserts only the plumbing, not how the model routes or words the
-> follow-up. 9.2 and 9.3 try a second (9.3: third) fresh conversation if the model resolved the
-> report without asking (legitimate), and print each attempt. Each scenario prints PASS or FAIL,
-> the reply text, the path from the journal (node ids, `Decided` choice with confidence,
-> provider/model and latency, tool calls, child-run nodes prefixed with their run id) and the
-> latency; a failure message carries the path taken. Exit status: 0 pass, 1 a scenario
+> Scenarios (the mock is seeded with several healthy sensors, so a report that names no device
+> cannot be solved by reading the house): **9.1** "turn on the bedroom lamp" then an automatic yes
+> (words through Jev with `--jev`, otherwise `answer_ask(allow)`), checking no chat node ran and the
+> mock's lamp is on; **9.2** "something in the house is not working and I don't know what" makes the
+> troubleshooting intake ask, then "it's the garage motion sensor, it keeps going offline" is taken
+> (same conversation; `intake=identified` or another question); **9.3** a chat that always holds the
+> floor ("let's have a proper chat ... wait for my answer", routed `chat` by `front`), then
+> "actually, turn on the coffee maker": the reply must come from a NEW conversation
+> (`continued_from`, `new_conversation`) whose `front` routed `device`, offering the physical ask,
+> which is refused (Alfred says he did not do it; the mock stays off); **9.4** 9.1's ended conversation
+> is listed `ended`, its transcript is readable, and `continue_from("that lamp keeps going offline")`
+> starts a new linked run whose `inputs.earlier` carries it (plumbing only, not the model's routing
+> or wording). `--extras` adds the optional **9.3x**, the same handoff out of the troubleshooting
+> intake, which depends on the model choosing to ask. 9.2 (2 tries) and 9.3 (2 tries) open a second
+> fresh conversation if the model did not hold the floor, and print each attempt. Each scenario prints
+> PASS or FAIL, the reply text, the path from the journal (node ids, `Decided` choice with confidence,
+> provider/model and latency, tool calls, child-run nodes prefixed with their run id) and the latency;
+> a failure message carries the path taken. Exit status: 0 pass, 1 a scenario
 > failed, 2 a precondition is missing, 3 the overall timeout fired.
 
 ## Secrets
