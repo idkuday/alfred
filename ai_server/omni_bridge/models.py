@@ -36,6 +36,14 @@ HIDDEN_FILENAME = "hidden_conversations.json"
 TITLE_CHARS = 60
 
 
+class ConversationNotFound(LookupError):
+    """An id that names no conversation the bridge can show (``main.py`` answers 404)."""
+
+
+class BridgeUnavailable(RuntimeError):
+    """The omni daemon cannot be reached (``main.py`` answers 503)."""
+
+
 class PendingAsk(BaseModel):
     """A question the run is parked on, as Alfred puts it to the person."""
 

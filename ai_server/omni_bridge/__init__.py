@@ -1,11 +1,39 @@
 """The omni bridge: Alfred's conversation layer over omni-kernel graph runs (omni-jev plan section 7).
 
-Importing this package does not import ``omni``: it exports only the data shapes
-(``models``). The pure logic modules (``library``, ``speakers``, ``transcript``, ``asks``,
-``quiescence``) import ``omni.*`` and are imported by the bridge client (``client.py``, A5,
-which will also export ``AlfredOmni`` here) - never by the rest of Alfred.
+Importing this package does not import ``omni``: the data shapes and the two errors come from
+``models`` (no kernel types), and ``AlfredOmni`` is resolved on first access (PEP 562) so that
+``from ai_server.omni_bridge import AlfredOmni`` works, yet a deployment on the ``core``
+backend, without omni installed, can still import everything else.
 """
 
-from .models import ConversationReply, ConversationState
+from typing import TYPE_CHECKING, Any
 
-__all__ = ["ConversationReply", "ConversationState"]
+from .models import (
+    BridgeUnavailable,
+    ConversationNotFound,
+    ConversationReply,
+    ConversationState,
+    ConversationSummary,
+    Transcript,
+)
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from .client import AlfredOmni
+
+__all__ = [
+    "AlfredOmni",
+    "BridgeUnavailable",
+    "ConversationNotFound",
+    "ConversationReply",
+    "ConversationState",
+    "ConversationSummary",
+    "Transcript",
+]
+
+
+def __getattr__(name: str) -> Any:
+    if name == "AlfredOmni":
+        from .client import AlfredOmni
+
+        return AlfredOmni
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
