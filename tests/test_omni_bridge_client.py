@@ -359,6 +359,40 @@ async def test_at_most_one_automatic_handoff_per_say(started):
     assert reply.state == "ended" and reply.conversation_id == "run-2"
 
 
+async def test_a_silent_new_request_hands_off_without_the_apology(started):
+    """A5d: a converse node that hands off says nothing; only the new run's reply is shown."""
+    bridge, k = started
+
+    def on_start(run_id, inputs):
+        if run_id == "run-1":
+            chat_run(k, run_id, "What would you like to do?")
+        else:
+            device_run(k, run_id)
+
+    def silent_handoff(sid, text):
+        # the run ends with outcome new-request (the live journal's shape), nothing spoken
+        env = k.call("sess-chat", "turn on the bedroom lamp", name="emit_outcome")
+        k.add("run-1", NodeExited("run-1", "chat", "new-request", f"sess-chat#{env.seq}"))
+        k.add("run-1", RunEnded("run-1", "new-request"))
+
+    k.on_start = on_start
+    await bridge.say("hi", None)
+    k.on_prompt = silent_handoff
+    reply = await bridge.say("turn on the bedroom lamp", "run-1")
+    assert reply.conversation_id == "run-2" and reply.continued_from == "run-1"
+    assert "something went wrong" not in reply.answer
+    assert reply.answer == "Shall I turn on Bedroom Lamp?"
+
+
+async def test_a_failed_run_that_says_nothing_still_apologises(started):
+    bridge, k = started
+    k.on_start = lambda run_id, inputs: chat_run(k, run_id, "What would you like to do?")
+    await bridge.say("hi", None)
+    k.on_prompt = lambda sid, text: k.add("run-1", RunEnded("run-1", "failed"))
+    reply = await bridge.say("turn on the bedroom lamp", "run-1")
+    assert reply.state == "ended" and reply.answer == client_mod.WENT_WRONG
+
+
 def troubleshoot_run(k: FakeKernel, run_id: str, repo) -> None:
     """front -> troubleshoot (child run-2, mini-trouble) -> intake holds the floor."""
     refs = lib_refs(repo)

@@ -198,7 +198,8 @@ Assistant writes are `physical` (ask every call), reads are `read`.
 > joined with a blank line (`speakers.compose_reply`); with nothing said and an ask pending,
 > the reply is the ask's question, and with both the question is appended. `speakers.spoken`
 > takes `since` (stream id -> last seq seen) so a reply holds only what was said after the
-> work was submitted.
+> work was submitted. A handoff never prefixes the fallback apology (fixed in A5d): a run that
+> ends `new-request` and said nothing gets no went-wrong text, only the new run's reply.
 
 ## Asks
 
