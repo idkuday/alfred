@@ -7,9 +7,33 @@ The design and its decisions are in [omni-jev-plan.md](omni-jev-plan.md).
 
 ## Setup
 
-> **Planned (omni-jev, A0/A8).** omni-kernel's main checkout on `feat/model-kinds`,
-> installed editable into Alfred's venv; `~/.omni/providers/typesafe/config.yml` with
-> `api_key_file:` pointing at `jev.env` (never committed). See the plan §4.1.
+> **As built (omni-jev, A0).** omni-kernel's main checkout is `C:\Users\udayr\Documents\Projects\omni-kernel`
+> on `feat/model-kinds`, installed editable into Alfred's venv:
+>
+> ```
+> C:\Users\udayr\Documents\Projects\alfred\.venv\Scripts\python.exe -m pip install -e C:\Users\udayr\Documents\Projects\omni-kernel
+> C:\Users\udayr\Documents\Projects\alfred\.venv\Scripts\python.exe -c "import omni, omni.codec.client, omni.graph.host; from omni.kernel.api import PROTOCOL_VERSION; print(omni.__file__, PROTOCOL_VERSION)"
+> ```
+>
+> The check prints the main checkout path and `8`. A daemon left running from before must be
+> stopped first (`omni daemon stop`): a protocol-7 daemon refuses a protocol-8 client. The bridge
+> also needs `prompt_toolkit` (the kernel's `[cli]` extra), which is installed in Alfred's venv.
+>
+> **One-time user step (J16).** Agents may not create this file, so you create it:
+> `C:\Users\udayr\.omni\providers\typesafe\config.yml`, containing the single line
+>
+> ```
+> api_key_file: C:\Users\udayr\Documents\Projects\alfred\jev.env
+> ```
+>
+> The file names the key file; it never contains the key. Until it exists, every Jev `decide`
+> node exits `error` and each graph takes its LLM fallback path.
+>
+> **Alternative.** Set `TYPESAFE_API_KEY` in the daemon's environment (the value comes from
+> `jev.env`; do not print or commit it). If no daemon runs and `TYPESAFE_API_KEY` is unset, the
+> bridge starts the daemon with the key from `settings.jev_key_file` in that child's environment
+> only (A5, the J16 secondary path). A daemon someone else started is not given the key.
+> Worktrees have no `jev.env`; pass the main checkout's file where a flag asks for it.
 
 ## MCP servers
 
@@ -25,8 +49,10 @@ Assistant writes are `physical` (ask every call), reads are `read`.
 > fails if either server exposes a tool the file does not grade, or lists one it no longer
 > exposes. **Adding a plugin means adding its four slugged entries to `mcp.json`.**
 
-> **Planned (omni-jev, A4).** The bridge generates the git-ignored `.omni/mcp.local.json` from
-> this file with Alfred's venv Python and the absolute repo root (J7).
+> **As built (omni-jev, A4).** The bridge generates the git-ignored `.omni/mcp.local.json` from
+> this file on `start()` (`library.write_local_mcp_config`, J7). Each `python` command becomes
+> Alfred's own interpreter and every server's `cwd` becomes the absolute repo root; the daemon
+> spawns the MCP servers from that generated file.
 
 ## Home Assistant tools
 
