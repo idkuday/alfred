@@ -64,12 +64,12 @@ The LLM-free path is `front` -> `device-action` -> `resolve` -> `say-act` (or
 
 ## device-troubleshoot
 
-Inputs `report` (the person's words) and `earlier`. Terminals: `say-report`,
-`say-escalate`, `say-bye`; subgraph outcomes `done`, `new-request`.
+Inputs `report` (the person's words) and `earlier`. Terminals: `intake` (which also
+routes `identified` onward), `say-report`, `say-escalate`; subgraph outcomes `done`, `new-request`.
 
 | Node | Kind | What it does | Leaves by |
 |---|---|---|---|
-| `intake` | agent, converse (15m) | Finds the device and symptom with the person, reading state before asking. Tools: mcp, decide, clock. | `identified` to `inspect`; `new-request` and `gave-up` to `say-bye` |
+| `intake` | agent, converse (15m) | Finds the device and symptom with the person, reading state before asking. Tools: mcp, decide, clock. | terminal; `identified` to `inspect`, else it ends the run with `done` (a one-line goodbye) or `new-request` (the new request as its output, handed to a fresh `front-door` run) |
 | `inspect` | agent | Gathers evidence: state, timestamps, integration reachability. Changes nothing. Tools: mcp, clock. | `done` to `triage` |
 | `triage` | decide (Jev, 0.7) | recoverable / healthy / needs-human. | `recoverable` to `recover`; `healthy` to `say-report`; `needs-human` to `say-escalate`; `unsure`/`error`/`timeout` to `diagnose-llm` |
 | `diagnose-llm` | agent | The same three-way judgement by an LLM. | same three targets |
@@ -79,12 +79,13 @@ Inputs `report` (the person's words) and `earlier`. Terminals: `say-report`,
 | `confirm-llm` | agent | The same judgement by an LLM. | `fixed` to `say-report`; `not-fixed` back to `recover` (`max_retries: 1`) |
 | `say-report` | agent (speaks) | Says what was wrong and what was done; `run_context` reads `outputs.recover` and `outputs.read-back` if they ran (`readable: ["outputs.*"]`). | terminal, `done` |
 | `say-escalate` | agent (speaks) | The shortest specific physical step for the person, and what was tried. | terminal, `done` |
-| `say-bye` | agent | Terminal for the intake exits. On `new-request` it repeats the request verbatim as its output and says nothing; otherwise a one-line goodbye. | terminal, `done` or `new-request` |
 
-Why `say-bye` exists: a terminal node has no outgoing edges, so `intake` cannot both
-branch on `identified` and end the run on `new-request`. The subgraph's terminal outcome
-must be `new-request` for front-door to hand off (J10). The bridge does not speak
-`say-bye` when its outcome is `new-request`.
+> **As built (pr-review, A2).** `say-bye` is gone: `intake` is itself a terminal node and routes
+> only `identified` (kernel P18, AD8), so a hand-off costs one LLM call fewer. `gave-up` is
+> renamed `done`, so the graph's terminal outcomes stay `done` and `new-request` and front-door's
+> `troubleshoot` node is unchanged. The bridge still keeps a terminal speaker's words out of the
+> reply when it exits `new-request`. An idle `intake` (15 minutes) now ends the run with
+> `timeout` instead of failing it with "no matching edge".
 
 ## home-routine
 

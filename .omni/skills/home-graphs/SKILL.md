@@ -32,9 +32,11 @@ overnight is still there in the morning; a plan you were holding in your head is
 - **`new-request` hands off.** A converse node that finds the person has moved on to a
   different job ends with the outcome `new-request` and puts the new request, in their
   words, as its output. The host starts a fresh `front-door` run with it. A graph that can
-  hand off declares `new-request` among its terminal outcomes. A terminal node cannot
-  also branch, so if an earlier node needs to hand off, route it to a closing `say-` node
-  that emits `new-request` silently (see `say-bye` in `device-troubleshoot`).
+  hand off declares `new-request` among its terminal outcomes. A terminal node may
+  also route: list the converse node in `terminal` and give it an edge only for the
+  outcome that continues (see `intake` in `device-troubleshoot`: `identified` goes on to
+  `inspect`; `new-request` and `done` end the run). Every other outcome of a terminal node
+  ends the run with that outcome, so no closing `say-` node is needed just to hand off.
 - **Jev decides, an LLM backs it up.** A `decide` node uses `"provider": "typesafe",
   "model": "jev-latest"` in its `constraints`, and its `unsure`, `error` and `timeout`
   exits go to an agent node that makes the same judgement. Jev is for bounded either/or

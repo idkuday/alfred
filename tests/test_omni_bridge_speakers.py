@@ -15,7 +15,7 @@ from omni.kernel.events import (  # noqa: E402
 
 from ai_server.omni_bridge import speakers  # noqa: E402
 from ai_server.omni_bridge.models import PendingAsk  # noqa: E402
-from tests.omni_fixtures import Journal, Story, library  # noqa: E402
+from tests.omni_fixtures import Journal, Story, library, terminal_library  # noqa: E402
 
 DASH = "—"
 
@@ -132,6 +132,35 @@ def test_a_terminal_converse_nodes_earlier_turns_stay_in_the_walk_but_not_the_re
         ("assistant", "Sure."),
     ]
     assert speakers.spoken(j.streams["run-1"], {}, j.streams, lib) == []
+
+
+def test_terminal_converse_node_that_routes_is_silent_on_new_request_and_hands_off():
+    """pr-review A2 (kernel P18): intake is terminal and routes ``identified`` onward. Exiting
+    ``new-request`` it ends the run: its last words are kept out of the reply but stay in the
+    walk, and the handoff text is its output."""
+    from omni.kernel.runs.fold import fold_run
+
+    from ai_server.omni_bridge import transcript
+
+    j = Journal()
+    lib = terminal_library()
+    j.add("run-1", RunStarted("run-1", "graph", "mini-terminal-trouble", {"report": "x"}))
+    j.add("run-1", NodeEntered("run-1", "intake", "sess-intake"))
+    j.message("sess-intake", "user", "SEED")
+    j.message("sess-intake", "assistant", "Which device?")
+    j.message("sess-intake", "user", "never mind, turn on the lamp")
+    j.message("sess-intake", "assistant", "Sure, switching.")
+    env = j.call("sess-intake", "turn on the lamp", name="emit_outcome")
+    j.add("run-1", NodeExited("run-1", "intake", "new-request", f"sess-intake#{env.seq}"))
+    j.add("run-1", RunEnded("run-1", "completed"))
+    run, sessions = j.streams["run-1"], j.streams
+    # All of the terminal node's assistant text is kept out of the reply (as for chat above)...
+    assert speakers.spoken(run, {}, sessions, lib) == []
+    # ... but the walk (transcript, `earlier`) keeps it, marked suppressed.
+    said = {i.text: i.suppressed for i in speakers.walk(run, {}, sessions, lib)
+            if i.role == "assistant"}
+    assert said == {"Which device?": True, "Sure, switching.": True}
+    assert transcript.handoff_text(fold_run(run), sessions) == "turn on the lamp"
 
 
 def test_terminal_speaker_without_handoff_is_not_suppressed():

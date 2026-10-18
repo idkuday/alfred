@@ -171,17 +171,23 @@ def test_graph_node_outcomes_match_subgraph_terminals(name: str) -> None:
         by_id = {n["id"]: n for n in sub["nodes"]}
         expected: Set[str] = set()
         for tid in sub["terminal"]:
-            expected.update(_outcome_names(by_id[tid]))
+            # Kernel P18: a terminal node that routes an outcome by an explicit edge
+            # continues on it; only its unrouted outcomes end the run.
+            routed = {e["on"] for e in sub["edges"] if e["from"] == tid}
+            expected.update(set(_outcome_names(by_id[tid])) - routed)
         assert set(_outcome_names(node)) == expected, f"{name}.{node['id']}"
 
 
-def test_bye_is_the_only_new_request_exit_in_troubleshoot() -> None:
-    """Section 5.3: a terminal cannot also branch, so only ``say-bye`` returns ``new-request``."""
+def test_troubleshoot_intake_is_terminal_and_routes_only_identified() -> None:
+    """AD8 (kernel P18): ``intake`` is terminal, routes only ``identified``, and is the one
+    node that returns ``new-request``; there is no ``say-bye``."""
     doc = RAW["device-troubleshoot"]
-    for tid in doc["terminal"]:
-        node = next(n for n in doc["nodes"] if n["id"] == tid)
-        has = "new-request" in _outcome_names(node)
-        assert has == (tid == "say-bye"), tid
+    assert "intake" in doc["terminal"]
+    assert "say-bye" not in {n["id"] for n in doc["nodes"]}
+    out = [(e["on"], e["to"]) for e in doc["edges"] if e["from"] == "intake"]
+    assert out == [("identified", "inspect")]
+    declares = [n["id"] for n in doc["nodes"] if "new-request" in _outcome_names(n)]
+    assert declares == ["intake"]
 
 
 def test_alfred_agent_manifest_has_decision_and_tools() -> None:
