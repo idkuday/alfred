@@ -387,6 +387,7 @@ lines), one at a time, the Alfred gate and smoke dry-run after each. Never push.
 | plan commit | 387 / 10 / 0 expected | 0 | kernel plan commit | |
 | A2 merge `9c36388` | 388 / 10 / 0 | not run (A2 implementer: pass) | `2958d89` | merger ran the gate after each merge |
 | A3 merge `9e16238` | 394 / 10 / 0 | 0 (`DRY RUN PASS`) | `2958d89` | §9 rows of A2 and A3 both kept (append-only conflict) |
+| A1 merge `51b2df0` | 400 / 10 / 0 | 0 (`DRY RUN PASS`) | `5e46e9c` | merger verified kernel defaults (`mode` interactive, `time_aware` basic) and that `threshold: 150000` resolves to tokens (`boot.py` T5 block) |
 
 - **Before wave 1 (A2, A3):** kernel wave 1 (T1–T4) merged; Alfred gate green against it
   (the kernel merger runs it).
