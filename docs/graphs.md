@@ -50,8 +50,8 @@ The conversation graph (J1: one conversation is one run). Terminals: `say-act`,
 | `device-action` | decide (Jev, 0.6) | Picks the verb: turn-on, turn-off, toggle, status, other. | on/off/toggle to `resolve`; `status` to `resolve-read`; `other`/`unsure`/`error`/`timeout` to `device-help` |
 | `resolve` | tool `mcp__home_assistant__resolve_entity` | Resolves the described device for a write (request + verb). Jev runs inside the MCP server. | `resolved` to `say-act`; `ambiguous`/`none`/`error` to `device-help` |
 | `resolve-read` | tool, same | Same, with `action: status`. | `resolved` to `say-status`; others to `device-help` |
-| `say-act` | tool `mcp__home_assistant__apply` | Performs the action on `{{ outputs.resolve }}`, passed whole as a JSON string (J4). Physical, so it asks first and the prompt shows the resolved device. Terminal; an `error` ends the run (the bridge words it). | terminal |
-| `say-status` | tool `mcp__home_assistant__describe` | Reads `{{ outputs.resolve-read }}` and states it. Terminal. | terminal |
+| `say-act` | tool `mcp__home_assistant__apply` | Performs the action on the device `resolve` found, passing `{{ outputs.resolve.entity_id }}` and `{{ outputs.resolve.entity_name }}` (pr-review A3). Physical, so it asks first and the prompt shows `entity_name`. Terminal; an `error` ends the run (the bridge words it). | terminal |
+| `say-status` | tool `mcp__home_assistant__describe` | Reads `{{ outputs.resolve-read.entity_id }}` / `.entity_name` and states it. Terminal. | terminal |
 | `device-help` | agent, converse (15m) | The LLM device path: `list_entities`, `decide` to match a description, then the HA tools; asks when the device is unclear. Tools: mcp, decide, clock, remember. | `done`; `new-request` |
 | `chat` | agent, converse (30m) | Plain conversation. Does nothing in the house; hands requests back with `new-request`. Tools: clock, remember. | `done`; `new-request` |
 | `clarify` | agent, converse (10m) | One short question when routing was unsure. Tools: clock. | `new-request` (restated clearly); `done` |

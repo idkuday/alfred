@@ -37,10 +37,11 @@ graph act on "turn on the bedroom lamp" without an LLM agent. ``resolve_entity``
 narrows Home Assistant's devices to the ones that support the action and, when
 more than one remains, asks Jev through :mod:`ai_server.decisions` (J5). Its
 result is a JSON object ``{"outcome": ..., "output": {...}}`` that the kernel's
-tool-outcome routing reads. A tool node's output cannot be indexed, so the
-resolved ``output`` is passed **whole** as the ``target`` string of ``apply`` /
-``describe``, which parse it. The permission prompt for ``apply`` therefore
-shows the resolved device's ``entity_name``.
+tool-outcome routing reads. The graph passes ``{{ outputs.resolve.entity_id }}``
+and ``{{ outputs.resolve.entity_name }}`` to ``apply`` / ``describe`` as two
+plain strings (kernel pr-review P17 walks a tool output that is a JSON object;
+pr-review AD9). The permission prompt for ``apply`` therefore shows the
+resolved device's ``entity_name``.
 
 A note on ``Grade.PHYSICAL`` — read before assuming this is graded correctly
 ------------------------------------------------------------------------------
@@ -156,26 +157,13 @@ def _resolved_output(device: DeviceInfo, confidence: float) -> dict[str, Any]:
     }
 
 
-def _parse_target(args: Any) -> tuple[dict[str, str] | None, str | None]:
-    """Parse the ``target`` string ``resolve_entity`` produced.
-
-    Returns ``(target, None)`` with ``entity_id`` and ``entity_name`` strings, or
-    ``(None, reason)``.
-    """
-    raw = args.get("target")
-    if not isinstance(raw, str) or not raw.strip():
-        return None, "target must be the JSON string resolve_entity produced"
-    try:
-        parsed = json.loads(raw)
-    except ValueError:
-        return None, "target is not valid JSON"
-    if not isinstance(parsed, dict):
-        return None, "target must be a JSON object"
-    entity_id, entity_name = parsed.get("entity_id"), parsed.get("entity_name")
+def _parse_entity(args: Any) -> tuple[dict[str, str] | None, str | None]:
+    """``entity_id`` and ``entity_name`` from a call's args (AD9), or ``(None, reason)``."""
+    entity_id, entity_name = args.get("entity_id"), args.get("entity_name")
     if not isinstance(entity_id, str) or "." not in entity_id:
-        return None, "target has no valid entity_id"
+        return None, "entity_id must be a Home Assistant entity id such as light.bedroom_lamp"
     if not isinstance(entity_name, str) or not entity_name.strip():
-        return None, "target has no entity_name"
+        return None, "entity_name must be the device's name"
     return {"entity_id": entity_id, "entity_name": entity_name}, None
 
 
@@ -383,9 +371,9 @@ def build_tools(ha: HomeAssistantIntegration) -> list[ToolSpec]:
                 content_text=f"action must be one of {', '.join(_APPLY_ACTIONS)}",
                 is_error=True,
             )
-        target, problem = _parse_target(args)
+        target, problem = _parse_entity(args)
         if target is None:
-            return ToolCallResult(content_text=problem or "bad target", is_error=True)
+            return ToolCallResult(content_text=problem or "bad entity", is_error=True)
         command = Command(action=_APPLY_ACTIONS[action], target=target["entity_id"])
         resp = await ha.execute_command(command)
         if resp.status == "error":
@@ -399,9 +387,9 @@ def build_tools(ha: HomeAssistantIntegration) -> list[ToolSpec]:
         return ToolCallResult(content_text=f"{target['entity_name']} is {state}.")
 
     async def _describe(args: dict) -> ToolCallResult:
-        target, problem = _parse_target(args)
+        target, problem = _parse_entity(args)
         if target is None:
-            return ToolCallResult(content_text=problem or "bad target", is_error=True)
+            return ToolCallResult(content_text=problem or "bad entity", is_error=True)
         info = await ha.get_device_info(target["entity_id"])
         if info is None:
             return ToolCallResult(
@@ -587,8 +575,8 @@ def build_tools(ha: HomeAssistantIntegration) -> list[ToolSpec]:
                 "turn-off, toggle or status. Returns a JSON object "
                 '{"outcome": "resolved" | "ambiguous" | "none", "output": {...}}. '
                 'On "resolved" the output holds entity_id, entity_name, domain '
-                "and confidence; pass that whole output, as a string, to apply "
-                "or describe as their 'target'. Makes no change to anything."
+                "and confidence; pass entity_id and entity_name to apply or "
+                "describe. Makes no change to anything."
             ),
             input_schema={
                 "type": "object",
@@ -611,10 +599,9 @@ def build_tools(ha: HomeAssistantIntegration) -> list[ToolSpec]:
             name="apply",
             description=(
                 "Physically turn a Home Assistant device ON or OFF, or TOGGLE "
-                "it. 'target' is the JSON string resolve_entity produced as "
-                "its output; it names the device (entity_id and entity_name), "
-                "and the entity_name is what a human sees when asked to "
-                "approve this call. Sends a real command to Home Assistant "
+                "it. Pass the entity_id and entity_name that resolve_entity "
+                "produced; the entity_name is what a human sees when asked "
+                "to approve this call. Sends a real command to Home Assistant "
                 "with an immediate real-world effect. Returns one sentence "
                 "such as 'Bedroom Lamp is on.'"
             ),
@@ -626,15 +613,16 @@ def build_tools(ha: HomeAssistantIntegration) -> list[ToolSpec]:
                         "enum": list(_APPLY_ACTIONS),
                         "description": "What to do to the device.",
                     },
-                    "target": {
+                    "entity_id": {
+                        "type": "string",
+                        "description": "The entity_id resolve_entity produced, e.g. light.bedroom_lamp.",
+                    },
+                    "entity_name": {
                         "type": "string",
                         "description": (
-                            "The JSON string resolve_entity produced as its "
-                            "output: an object with entity_id and entity_name "
-                            "(the human-readable device name shown to whoever "
-                            "approves this call), e.g. "
-                            '\'{"entity_id": "light.bedroom_lamp", '
-                            '"entity_name": "Bedroom Lamp"}\'.'
+                            "The entity_name resolve_entity produced: the "
+                            "human-readable device name shown to whoever "
+                            "approves this call, e.g. 'Bedroom Lamp'."
                         ),
                     },
                     "request": {
@@ -642,7 +630,7 @@ def build_tools(ha: HomeAssistantIntegration) -> list[ToolSpec]:
                         "description": "The person's original words, for the record.",
                     },
                 },
-                "required": ["action", "target", "request"],
+                "required": ["action", "entity_id", "entity_name", "request"],
             },
             handler=_apply,
         ),
@@ -650,22 +638,23 @@ def build_tools(ha: HomeAssistantIntegration) -> list[ToolSpec]:
             name="describe",
             description=(
                 "Read-only. Say in one sentence what state a device is in, "
-                "e.g. 'Bedroom Lamp is off (last changed 14:02).' 'target' is "
-                "the JSON string resolve_entity produced as its output. Makes "
-                "no change to anything."
+                "e.g. 'Bedroom Lamp is off (last changed 14:02).' Pass the "
+                "entity_id and entity_name that resolve_entity produced. "
+                "Makes no change to anything."
             ),
             input_schema={
                 "type": "object",
                 "properties": {
-                    "target": {
+                    "entity_id": {
                         "type": "string",
-                        "description": (
-                            "The JSON string resolve_entity produced as its "
-                            "output: an object with entity_id and entity_name."
-                        ),
-                    }
+                        "description": "The entity_id resolve_entity produced, e.g. light.bedroom_lamp.",
+                    },
+                    "entity_name": {
+                        "type": "string",
+                        "description": "The entity_name resolve_entity produced, e.g. 'Bedroom Lamp'.",
+                    },
                 },
-                "required": ["target"],
+                "required": ["entity_id", "entity_name"],
             },
             handler=_describe,
         ),

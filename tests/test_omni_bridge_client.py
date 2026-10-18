@@ -140,7 +140,7 @@ def device_run(k: FakeKernel, run_id: str) -> None:
     k.add(run_id, NodeEntered(run_id, "say-act", "sess-act"))
     k.add(run_id, Request("req-1", RequestKind.PERMISSION, {
         "tool": APPLY,
-        "args": {"action": "turn-on", "target": json.dumps(LAMP)},
+        "args": {"action": "turn-on", **LAMP},
         "options": ["once", "deny"],
     }))
 
