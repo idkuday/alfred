@@ -3,16 +3,16 @@
   "name": "device-troubleshoot",
   "description": "Something in the house is not working: find out what with the person, gather evidence, let Jev triage it, attempt one bounded recovery, confirm it from the source, and tell the person.",
   "entry": "intake",
-  "terminal": ["say-report", "say-escalate", "say-bye"],
+  "terminal": ["intake", "say-report", "say-escalate"],
   "limits": { "max_nodes": 30, "cost_usd": 1.5, "wall_clock": "45m" },
   "nodes": [
     { "id": "intake", "kind": "agent", "agent": "alfred",
-      "prompt": "The person reported a problem: inputs.report (inputs.earlier, if not empty, is an earlier conversation they continued). Find out which device and what exactly is wrong — read entity state with the tools and use the decide tool to match their words to an entity; ask them only what you cannot read. When you know the device (entity_id and name) and the symptom, call emit_outcome with 'identified' and put both, plainly, as the output. If they move on to something else entirely, call emit_outcome with 'new-request' with that request as the output. If they want to stop, 'gave-up'.",
+      "prompt": "The person reported a problem: inputs.report (inputs.earlier, if not empty, is an earlier conversation they continued). Find out which device and what exactly is wrong — read entity state with the tools and use the decide tool to match their words to an entity; ask them only what you cannot read. When you know the device (entity_id and name) and the symptom, call emit_outcome with 'identified' and put both, plainly, as the output. If they move on to something else entirely, call emit_outcome with 'new-request' and put that request, in their words, as the output; do not answer it — it starts its own conversation. If they want to stop, say a one-line goodbye and call emit_outcome with 'done'.",
       "inputs": ["inputs.report", "inputs.earlier"],
       "outcomes": {
         "identified":  "Device and symptom are known; output names both.",
         "new-request": "The person moved on; output is the new request, verbatim.",
-        "gave-up":     "The person does not want to continue."
+        "done":        "The person wants to stop; you said a one-line goodbye."
       },
       "converse": true, "floor_timeout": "15m",
       "constraints": { "tools": ["mcp", "decide", "clock"] } },
@@ -80,21 +80,10 @@
       "inputs": ["outputs.intake", "outputs.inspect"],
       "readable": ["outputs.*"],
       "outcomes": ["done"],
-      "constraints": { "tools": ["clock"] } },
-
-    { "id": "say-bye", "kind": "agent", "agent": "alfred",
-      "prompt": "Read outputs.intake. If the person moved on to a new request, call emit_outcome with 'new-request' and repeat that request verbatim as the output, and say nothing to the person. Otherwise say a one-line goodbye and call emit_outcome with 'done'.",
-      "inputs": ["outputs.intake"],
-      "outcomes": {
-        "done":        "The person stopped; a goodbye was said.",
-        "new-request": "The person moved on; output is the new request, verbatim."
-      },
       "constraints": { "tools": ["clock"] } }
   ],
   "edges": [
     { "from": "intake", "to": "inspect",  "on": "identified" },
-    { "from": "intake", "to": "say-bye",  "on": "new-request" },
-    { "from": "intake", "to": "say-bye",  "on": "gave-up" },
     { "from": "inspect", "to": "triage",      "on": "done" },
     { "from": "triage", "to": "recover",      "on": "recoverable" },
     { "from": "triage", "to": "say-report",   "on": "healthy" },

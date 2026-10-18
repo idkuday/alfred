@@ -77,6 +77,31 @@ MINI_TROUBLE: dict[str, Any] = {
 }
 
 
+# The shape device-troubleshoot has since pr-review A2 (AD8): a converse node that is terminal
+# *and* routes one outcome onward; its other outcomes end the run. Kept apart from
+# MINI_TROUBLE, which still tests the `say-` closing-node pattern.
+MINI_TERMINAL_TROUBLE: dict[str, Any] = {
+    "name": "mini-terminal-trouble",
+    "version": 1,
+    "entry": "intake",
+    "terminal": ["intake", "say-report"],
+    "nodes": [
+        {"id": "intake", "kind": "agent", "converse": True, "prompt": "ask",
+         "outcomes": ["identified", "new-request", "done"]},
+        {"id": "say-report", "kind": "agent", "prompt": "report", "outcomes": ["done"]},
+    ],
+    "edges": [
+        {"from": "intake", "to": "say-report", "on": "identified"},
+    ],
+}
+
+
+def terminal_library() -> GraphLibrary:
+    lib = GraphLibrary()
+    lib.load(MINI_TERMINAL_TROUBLE)
+    return lib
+
+
 def library() -> GraphLibrary:
     lib = GraphLibrary()
     lib.load(MINI_TROUBLE)
