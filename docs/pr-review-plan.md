@@ -385,6 +385,8 @@ lines), one at a time, the Alfred gate and smoke dry-run after each. Never push.
 | After | Gate (passed / skipped / failed) | Smoke dry-run | Kernel `feat/model-kinds` at | Notes |
 |---|---|---|---|---|
 | plan commit | 387 / 10 / 0 expected | 0 | kernel plan commit | |
+| A2 merge `9c36388` | 388 / 10 / 0 | not run (A2 implementer: pass) | `2958d89` | merger ran the gate after each merge |
+| A3 merge `9e16238` | 394 / 10 / 0 | 0 (`DRY RUN PASS`) | `2958d89` | §9 rows of A2 and A3 both kept (append-only conflict) |
 
 - **Before wave 1 (A2, A3):** kernel wave 1 (T1–T4) merged; Alfred gate green against it
   (the kernel merger runs it).
