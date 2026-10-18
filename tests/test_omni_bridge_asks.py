@@ -1,6 +1,5 @@
 """Rendering asks and interpreting the reply (plan J13, J14, section 7.6). No network: a fake `decide`."""
 
-import json
 
 import pytest
 
@@ -22,8 +21,8 @@ def _perm(tool, args, **extra):
 
 
 def _apply(action="turn-on", name="Bedroom Lamp"):
-    target = json.dumps({"entity_id": "light.bedroom_lamp", "entity_name": name})
-    return _perm("mcp__home_assistant__apply", {"action": action, "target": target, "request": "x"})
+    args = {"action": action, "entity_id": "light.bedroom_lamp", "entity_name": name, "request": "x"}
+    return _perm("mcp__home_assistant__apply", args)
 
 
 class FakeDecide:
@@ -55,14 +54,13 @@ def test_render_home_assistant_apply(action, expected):
     assert pending.req_id == "req-1" and pending.stream_id == "run-1" and pending.reasks == 0
 
 
-def test_render_apply_accepts_a_target_object_and_falls_back_to_entity_id():
-    req = _perm("mcp__home_assistant__apply",
-                {"action": "turn-on", "target": {"entity_id": "light.x"}})
+def test_render_apply_falls_back_to_entity_id_when_entity_name_is_absent():
+    req = _perm("mcp__home_assistant__apply", {"action": "turn-on", "entity_id": "light.x"})
     assert asks.render(req, "run-1").question == "Shall I turn on light.x?"
 
 
-def test_render_apply_with_a_bad_target_falls_back_to_generic():
-    req = _perm("mcp__home_assistant__apply", {"action": "turn-on", "target": "not json"})
+def test_render_apply_with_no_entity_name_and_no_entity_id_falls_back_to_generic():
+    req = _perm("mcp__home_assistant__apply", {"action": "turn-on"})
     assert asks.render(req, "run-1").question == "Alfred wants to use apply. Allow it?"
 
 

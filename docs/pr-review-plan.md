@@ -413,3 +413,7 @@ Deferred (coordinator, needs the user's approval; not run by implementers):
 
 | Task | Change to the plan | Why |
 |---|---|---|
+| A3 | Also reworded `docs/omni.md` L210 (the A4 permission bullet) from "`entity_name` in its `target`" to "its `entity_name`, else `entity_id`". | It lies outside the card's listed sections but described the removed `target` arg. |
+| A3 | Added the `As built (pr-review, A3)` note as a nested quote under the replaced paragraph in `docs/omni.md`. | Keeps the A2 block's structure; the note records the validation and `target`-error behaviour. |
+| A3 | `tests/test_front_door_args.py` also asserts the `say-act` / `say-status` args by parametrized substitution (two nodes), not only `say-act`. | Cheap, and it covers `resolve-read`. |
+| A3 | Also edited `tests/test_omni_bridge_client.py` L143 (the scripted `apply` permission args now carry `entity_id`/`entity_name` instead of `target`). | Not in the card, but five client tests asserted the approval question from those args. |

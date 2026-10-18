@@ -179,60 +179,67 @@ async def test_resolve_rejects_an_unknown_action(house, fake_choose):
 # ── apply ────────────────────────────────────────────────────────────────
 
 
-def _target(entity_id="light.bedroom_lamp", name="Bedroom Lamp") -> str:
-    return json.dumps({"entity_id": entity_id, "entity_name": name})
+def _target(entity_id="light.bedroom_lamp", name="Bedroom Lamp") -> dict:
+    """The two kwargs a graph (or an LLM) passes to apply / describe (AD9)."""
+    return {"entity_id": entity_id, "entity_name": name}
 
 
 @pytest.mark.asyncio
 async def test_apply_flips_the_mock_and_returns_the_sentence(house):
     tools, server, _ = house
     apply_ = tools["apply"]
-    result = await _call(apply_, action="turn-on", target=_target(), request="lamp on")
+    result = await _call(apply_, action="turn-on", **_target(), request="lamp on")
     assert not result.is_error
     assert result.content_text == "Bedroom Lamp is on."
     assert server.states["light.bedroom_lamp"]["state"] == "on"
 
-    result = await _call(apply_, action="toggle", target=_target(), request="flip it")
+    result = await _call(apply_, action="toggle", **_target(), request="flip it")
     assert result.content_text == "Bedroom Lamp is off."
     assert server.states["light.bedroom_lamp"]["state"] == "off"
 
-    await _call(apply_, action="turn-on", target=_target(), request="lamp on")
-    result = await _call(apply_, action="turn-off", target=_target(), request="lamp off")
+    await _call(apply_, action="turn-on", **_target(), request="lamp on")
+    result = await _call(apply_, action="turn-off", **_target(), request="lamp off")
     assert result.content_text == "Bedroom Lamp is off."
     assert server.calls[-1][:2] == ("light", "turn_off")
 
 
 @pytest.mark.asyncio
-async def test_apply_takes_resolve_entity_output_whole(house, fake_choose):
+async def test_apply_takes_resolve_entity_fields(house, fake_choose):
     tools, server, _ = house
     fake_choose.answer = ("switch.coffee_maker", 0.95)
     _, output = _outcome(
         await _call(tools["resolve_entity"], request="coffee", action="turn-on")
     )
     result = await _call(
-        tools["apply"], action="turn-on", target=json.dumps(output), request="coffee"
+        tools["apply"],
+        action="turn-on",
+        entity_id=output["entity_id"],
+        entity_name=output["entity_name"],
+        request="coffee",
     )
     assert result.content_text == "Coffee Maker is on."
     assert server.states["switch.coffee_maker"]["state"] == "on"
 
 
 @pytest.mark.parametrize(
-    "target",
+    "fields",
     [
-        "",
-        "not json",
-        "[1, 2]",
-        json.dumps({"entity_id": "light.bedroom_lamp"}),
-        json.dumps({"entity_name": "Bedroom Lamp"}),
-        json.dumps({"entity_id": "nodot", "entity_name": "X"}),
-        json.dumps({"entity_id": "light.bedroom_lamp", "entity_name": " "}),
-        {"entity_id": "light.bedroom_lamp", "entity_name": "not a string target"},
+        {},
+        {"entity_id": "light.bedroom_lamp"},
+        {"entity_name": "Bedroom Lamp"},
+        {"entity_id": "nodot", "entity_name": "X"},
+        {"entity_id": "", "entity_name": "X"},
+        {"entity_id": "light.bedroom_lamp", "entity_name": " "},
+        {"entity_id": "light.bedroom_lamp", "entity_name": ""},
+        {"entity_id": ["light.bedroom_lamp"], "entity_name": "X"},
+        {"entity_id": "light.bedroom_lamp", "entity_name": 7},
+        {"target": json.dumps({"entity_id": "light.bedroom_lamp", "entity_name": "X"})},
     ],
 )
 @pytest.mark.asyncio
-async def test_apply_bad_target_is_an_error_and_changes_nothing(house, target):
+async def test_apply_bad_entity_is_an_error_and_changes_nothing(house, fields):
     tools, server, _ = house
-    result = await _call(tools["apply"], action="turn-on", target=target, request="x")
+    result = await _call(tools["apply"], action="turn-on", request="x", **fields)
     assert result.is_error
     assert server.calls == []
     assert server.states["light.bedroom_lamp"]["state"] == "off"
@@ -242,7 +249,7 @@ async def test_apply_bad_target_is_an_error_and_changes_nothing(house, target):
 async def test_apply_bad_action_is_an_error(house):
     tools, server, _ = house
     for action in ("status", "explode", ""):
-        result = await _call(tools["apply"], action=action, target=_target(), request="x")
+        result = await _call(tools["apply"], action=action, **_target(), request="x")
         assert result.is_error
         assert "action must be one of" in result.content_text
     assert server.calls == []
@@ -254,7 +261,7 @@ async def test_apply_to_an_unknown_entity_is_an_error(house):
     result = await _call(
         tools["apply"],
         action="turn-on",
-        target=_target("light.ghost", "Ghost Light"),
+        **_target("light.ghost", "Ghost Light"),
         request="x",
     )
     assert result.is_error
@@ -264,10 +271,11 @@ def test_apply_schema_tells_the_prompt_about_entity_name():
     ha = HomeAssistantIntegration({"url": "http://127.0.0.1:9", "token": "t"})
     tools = {t.name: t for t in build_tools(ha)}
     schema = tools["apply"].input_schema
-    assert schema["required"] == ["action", "target", "request"]
-    assert "entity_name" in schema["properties"]["target"]["description"]
+    assert schema["required"] == ["action", "entity_id", "entity_name", "request"]
+    assert "target" not in schema["properties"]
+    assert "approve" in schema["properties"]["entity_name"]["description"]
     assert tools["resolve_entity"].input_schema["required"] == ["request", "action"]
-    assert tools["describe"].input_schema["required"] == ["target"]
+    assert tools["describe"].input_schema["required"] == ["entity_id", "entity_name"]
 
 
 # ── describe ─────────────────────────────────────────────────────────────
@@ -276,11 +284,11 @@ def test_apply_schema_tells_the_prompt_about_entity_name():
 @pytest.mark.asyncio
 async def test_describe_states_the_state(house):
     tools, server, _ = house
-    result = await _call(tools["describe"], target=_target())
+    result = await _call(tools["describe"], **_target())
     assert not result.is_error
     assert result.content_text == "Bedroom Lamp is off."
     server.states["light.bedroom_lamp"]["state"] = "on"
-    result = await _call(tools["describe"], target=_target())
+    result = await _call(tools["describe"], **_target())
     assert result.content_text == "Bedroom Lamp is on."
 
 
@@ -290,13 +298,14 @@ async def test_describe_includes_last_changed_when_present(house):
     stamp = "2026-07-01T14:02:00+00:00"
     server.states["light.bedroom_lamp"]["attributes"]["last_changed"] = stamp
     expected = datetime.fromisoformat(stamp).astimezone().strftime("%H:%M")
-    result = await _call(tools["describe"], target=_target())
+    result = await _call(tools["describe"], **_target())
     assert result.content_text == f"Bedroom Lamp is off (last changed {expected})."
 
 
 @pytest.mark.asyncio
-async def test_describe_bad_target_and_unknown_entity_are_errors(house):
+async def test_describe_bad_entity_and_unknown_entity_are_errors(house):
     tools, _, _ = house
-    assert (await _call(tools["describe"], target="nope")).is_error
-    ghost = await _call(tools["describe"], target=_target("light.ghost", "Ghost"))
+    assert (await _call(tools["describe"], entity_id="nodot", entity_name="X")).is_error
+    assert (await _call(tools["describe"], entity_id="light.bedroom_lamp")).is_error
+    ghost = await _call(tools["describe"], **_target("light.ghost", "Ghost"))
     assert ghost.is_error

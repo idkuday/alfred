@@ -54,12 +54,14 @@
     { "id": "say-act", "kind": "tool",
       "capability": "mcp__home_assistant__apply",
       "args": { "action": "{{ outputs.device-action.choice }}",
-                "target": "{{ outputs.resolve }}",
+                "entity_id": "{{ outputs.resolve.entity_id }}",
+                "entity_name": "{{ outputs.resolve.entity_name }}",
                 "request": "{{ inputs.message }}" } },
 
     { "id": "say-status", "kind": "tool",
       "capability": "mcp__home_assistant__describe",
-      "args": { "target": "{{ outputs.resolve-read }}" } },
+      "args": { "entity_id": "{{ outputs.resolve-read.entity_id }}",
+                "entity_name": "{{ outputs.resolve-read.entity_name }}" } },
 
     { "id": "device-help", "kind": "agent", "agent": "alfred",
       "prompt": "The person asked for something about a device that needs judgement: inputs.message. Work out which device (use list_entities, and the decide tool to match a description to an entity), do what they asked with the Home Assistant tools, and tell them what happened in one or two sentences. Ask them when you genuinely cannot tell which device. If what they say next is a different request entirely, call emit_outcome with 'new-request' and put their new request, in their words, as the output. When they are done, call emit_outcome with 'done'.",

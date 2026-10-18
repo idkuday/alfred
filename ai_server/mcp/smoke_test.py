@@ -190,13 +190,11 @@ def main() -> int:
             print("[smoke] FAIL: resolve_entity did not return an outcome object")
             ok = False
 
-        target = json.dumps(
-            {"entity_id": "switch.coffee_maker", "entity_name": "Coffee Maker"}
-        )
+        device = {"entity_id": "switch.coffee_maker", "entity_name": "Coffee Maker"}
         result = client.call_tool(
             "home_assistant",
             "apply",
-            {"action": "turn-on", "target": target, "request": "make coffee"},
+            {"action": "turn-on", **device, "request": "make coffee"},
         )
         text = McpClient.text_of(result)
         print(f"[smoke] home_assistant.apply -> {text}")
@@ -204,7 +202,7 @@ def main() -> int:
             print("[smoke] FAIL: apply did not report 'Coffee Maker is on.'")
             ok = False
 
-        result = client.call_tool("home_assistant", "describe", {"target": target})
+        result = client.call_tool("home_assistant", "describe", device)
         text = McpClient.text_of(result)
         print(f"[smoke] home_assistant.describe -> {text}")
         if McpClient.failed(result) or not text.startswith("Coffee Maker is on"):

@@ -81,8 +81,7 @@ def _permission_question(payload: Mapping[str, Any]) -> str:
     args = _json_object(payload.get("args"))
     short = short_tool_name(tool) or "a tool"
     if tool == HA_APPLY:
-        target = _json_object(args.get("target"))
-        name = str(target.get("entity_name") or target.get("entity_id") or "").strip()
+        name = str(args.get("entity_name") or args.get("entity_id") or "").strip()
         verb = str(args.get("action") or "").replace("-", " ").replace("_", " ").strip()
         if name and verb:
             return f"Shall I {verb} {name}?"

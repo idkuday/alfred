@@ -63,8 +63,8 @@ Assistant writes are `physical` (ask every call), reads are `read`.
 > | Tool | Grade | Takes | Returns |
 > |---|---|---|---|
 > | `resolve_entity` | read | `request`, `action` (`turn-on`, `turn-off`, `toggle`, `status`) | JSON object `{"outcome": "resolved"\|"ambiguous"\|"none", "output": {...}}` |
-> | `apply` | physical | `action` (`turn-on`, `turn-off`, `toggle`), `target`, `request` | one sentence, `Bedroom Lamp is on.`; errors are `isError` results |
-> | `describe` | read | `target` | one sentence, `Bedroom Lamp is off (last changed 14:02).` |
+> | `apply` | physical | `action` (`turn-on`, `turn-off`, `toggle`), `entity_id`, `entity_name`, `request` | one sentence, `Bedroom Lamp is on.`; errors are `isError` results |
+> | `describe` | read | `entity_id`, `entity_name` | one sentence, `Bedroom Lamp is off (last changed 14:02).` |
 >
 > `list_entities` (fixed in A2b) lists `light`, `switch`, `fan`, `climate`, `cover`, `sensor`,
 > `binary_sensor`, `lock`, `media_player` and `vacuum`, each with `entity_id`, `name`,
@@ -84,10 +84,16 @@ Assistant writes are `physical` (ask every call), reads are `read`.
 > is `ambiguous` with `candidates` (the first five entity ids), which the graph routes to the
 > LLM device agent. The tools never raise on a missing key.
 >
-> A tool node's output cannot be indexed, so `resolve_entity`'s `output` is passed **whole**
-> as the string `target` of `apply` / `describe`, which parse it (an object with `entity_id`
-> and `entity_name`). The permission prompt for `apply` therefore shows the resolved
-> device's name. `apply` reports the state Home Assistant returned after the call.
+> The graph passes `{{ outputs.resolve.entity_id }}` and `{{ outputs.resolve.entity_name }}`
+> to `apply` / `describe` as two plain strings (the kernel walks a tool output that is a JSON
+> object, kernel pr-review P17). The permission prompt for `apply` shows `entity_name`
+> (falling back to `entity_id`). `apply` reports the state Home Assistant returned after the
+> call.
+>
+> > **As built (pr-review, A3).** `apply` and `describe` take `entity_id` and `entity_name`,
+> > both required, instead of the JSON-string `target`; a bad `entity_id` (no `.`) or a blank
+> > `entity_name` is an error result that changes nothing. An LLM agent that still sends
+> > `target` gets that error naming the missing fields.
 >
 > `ai_server/decisions.py` is the one door to a decision model (J5): `get_decision_model()`
 > (a cached `TypeSafeDecision` on `KeyFileCredential(settings.jev_key_file)`, or `None`),
@@ -207,7 +213,7 @@ Assistant writes are `physical` (ask every call), reads are `read`.
 > kernel `Request` into a `PendingAsk`:
 >
 > - **permission**: `Shall I turn on Bedroom Lamp?` for `mcp__home_assistant__apply` (the verb
->   is its `action`, the name is `entity_name` in its `target`), `Shall I run <tool> on
+>   is its `action`, the name is its `entity_name`, else `entity_id`; pr-review A3), `Shall I run <tool> on
 >   <entity_name>?` for any tool with an `entity_name` argument, otherwise `Alfred wants to
 >   use <tool>. Allow it?`. Options are `allow`/`deny`.
 > - **approval** (a `human` node): its prompt, each shown value trimmed to 400 characters, then
