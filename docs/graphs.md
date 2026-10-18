@@ -31,6 +31,13 @@ node declares its own context (`inputs`); nothing else reaches it.
 - **Agent `alfred` (J17).** `agent.yml` sets `decision: {provider: typesafe, model:
   jev-latest}` and allows `decide` and `run_context`. Nodes narrow `tools` to what they
   need; only `new-capability`'s designer chain touches graph listing.
+  > **As built (pr-review, A1).** The four manifests (`alfred`, `alfred-builder`,
+  > `alfred-designer`, `alfred-verifier`) name `claude-sonnet-5-5` and set no `max_tokens`
+  > or `max_iterations` (kernel defaults: the per-model output cap, no iteration cap). Each
+  > keeps a `budget.cost` (50.00 / 1.50 / 0.50 / 0.75). `alfred` also drops `budget.tokens`,
+  > `mode` and `time_aware` (the kernel defaults, `interactive` and `basic`, are what it
+  > wants) and compacts at 150 000 tokens keeping 6 recent turns.
+  > `tests/test_agent_manifests.py` pins all of this.
 
 Validate with `omni.graph.validate.validate(graph, library=discover_library(repo))`
 (what `tests/test_graphs.py` does). The `omni graph validate` CLI builds a library of one

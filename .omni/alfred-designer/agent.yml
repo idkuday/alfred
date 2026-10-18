@@ -6,12 +6,10 @@
 name: alfred-designer
 
 provider: anthropic
-model: claude-sonnet-4-6
-max_tokens: 4096
+model: claude-sonnet-5-5
 
 budget:
   cost: 0.50
-  max_iterations: 12
 
 assembly:
   - { name: runtime_core, source: system.md }
