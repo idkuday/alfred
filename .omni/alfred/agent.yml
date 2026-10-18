@@ -16,11 +16,10 @@
 name: alfred
 
 # Sonnet rather than a local model: Alfred's job is tool-calling with a permission gate
-# in the middle, and that is the axis local models are weakest on. `problems.md` P16
-# rules out claude-haiku-4-5 entirely — it 400s on every turn with a default toolset.
+# in the middle, and that is the axis local models are weakest on. The output cap and the
+# context window come from the kernel's model table (64 000 output tokens, 1M context).
 provider: anthropic
-model: claude-sonnet-4-6
-max_tokens: 4096
+model: claude-sonnet-5-5
 
 # Jev (Typesafe) answers the `decide` tool: matching a spoken description to an entity,
 # and every other bounded either/or an agent node needs. omni-jev J17.
@@ -28,25 +27,19 @@ decision:
   provider: typesafe
   model: jev-latest
 
-# Interactive, not autonomous. Alfred is driven — by a voice client, alfred-ui, or a
-# terminal — and answers. Autonomous mode is for an agent that wakes itself on a
-# schedule; a house assistant that decides on its own to start doing things is a
-# different product and a worse one.
-mode: interactive
+# Interactive with a `basic` time anchor and clock tool -- both kernel defaults, so neither
+# is written here. Autonomous mode is for an agent that wakes itself; a house assistant
+# that decides on its own to start doing things is a different product and a worse one.
 
-# `basic` gives the session a current-time anchor and a read-only clock tool. A home
-# assistant is asked "is it late enough to..." constantly, and without this it guesses.
-time_aware: basic
-
-# Long-running by construction: this is the resident session behind a voice client, so
-# the caps are lifetime rather than per-task. Every one is a circuit breaker.
+# The resident session behind a voice client: the cost cap is session-wide, not per task.
+# There is no iteration cap (the kernel's default is none); compaction bounds the context.
 budget:
-  tokens: 20_000_000
   cost: 50.00
-  max_iterations: 25
 
+# Compact at 150K tokens rather than 0.7 of a 1M window: each request is billed on its
+# whole prompt, and a resident session should not carry ~700K tokens per turn (AD5).
 compaction:
-  threshold: 0.7
+  threshold: 150000
   keep_recent: 6
 
 assembly:

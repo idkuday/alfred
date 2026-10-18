@@ -328,8 +328,9 @@ Assistant writes are `physical` (ask every call), reads are `read`.
 >   daemon it spawns. Nothing is printed. In a worktree pass the main checkout's `jev.env`
 >   (`--jev-key-file`), since a worktree has none. Without `--jev` the script removes
 >   `TYPESAFE_API_KEY` from its environment and points the key setting at a missing file.
-> * Live runs in this environment use DeepSeek for the agent nodes (the Anthropic key here is
->   rejected): prefix the command with `OMNI_NODE_PROVIDER=deepseek OMNI_NODE_MODEL=deepseek-v4-flash`
+> * The agent manifests now name `claude-sonnet-5-5` (pr-review A1), so a run without the override
+>   uses it. While the Anthropic key here is rejected, live runs still use DeepSeek for the agent
+>   nodes: prefix the command with `OMNI_NODE_PROVIDER=deepseek OMNI_NODE_MODEL=deepseek-v4-flash`
 >   (PowerShell: set `$env:OMNI_NODE_PROVIDER` / `$env:OMNI_NODE_MODEL` first). The banner prints the
 >   effective `provider/model` after the override, and whether its key was found.
 > * `--only 9.1` runs one scenario (9.4 adds 9.1, whose ended conversation it continues; 9.2 and 9.3

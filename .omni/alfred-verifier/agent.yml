@@ -5,12 +5,10 @@
 name: alfred-verifier
 
 provider: anthropic
-model: claude-sonnet-4-6
-max_tokens: 4096
+model: claude-sonnet-5-5
 
 budget:
   cost: 0.75
-  max_iterations: 20
 
 assembly:
   - { name: runtime_core, source: system.md }

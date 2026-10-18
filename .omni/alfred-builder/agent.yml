@@ -2,12 +2,10 @@
 name: alfred-builder
 
 provider: anthropic
-model: claude-sonnet-4-6
-max_tokens: 8192
+model: claude-sonnet-5-5
 
 budget:
   cost: 1.50
-  max_iterations: 30
 
 assembly:
   - { name: runtime_core, source: system.md }
