@@ -1,0 +1,28 @@
+# The `build` node of the `new-capability` graph.
+name: alfred-builder
+
+provider: anthropic
+model: claude-sonnet-5-5
+
+budget:
+  cost: 1.50
+
+assembly:
+  - { name: runtime_core, source: system.md }
+  - { name: execution_policy }
+  - { name: rules, source: ../alfred/rules.md }
+  - { name: skills_index }
+
+# The only node in the library that can write, and it can run tests. `bash` is here for
+# the test run and for nothing else; the graph's approval gate is what stands in front
+# of it, which is why this node sits behind a `human` node rather than after `design`.
+tools:
+  allow:
+    - read_file
+    - write_file
+    - create_file
+    - edit_file
+    - list_dir
+    - search
+    - glob
+    - bash

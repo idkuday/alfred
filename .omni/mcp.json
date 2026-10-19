@@ -1,0 +1,64 @@
+{
+  "_comment": [
+    "Grades are the point of this file, not the commands.",
+    "",
+    "MCP carries no risk vocabulary, so every MCP tool defaults to grade 'exec' —",
+    "disposition ASK, which a standing grant satisfies. Without the entries below, a",
+    "user who once approved turn_on with 'always' would have silently pre-approved",
+    "every future physical call to it, for the rest of the session and every session",
+    "carrying the same grant. 'physical' is the one grade no standing grant can reach",
+    "(kernel-design SS8): it asks every single call, every time.",
+    "",
+    "The read tools are graded down deliberately and for the same safety reason, not",
+    "for convenience: a server graded physical wholesale would prompt on every",
+    "get_state too, and a user prompted forty times an hour stops reading the prompt.",
+    "Cheapening the reads is what keeps the writes worth reading.",
+    "",
+    "cwd is resolved relative to this file, so \"..\" is the repo root: a shell running",
+    "`omni --mcp` finds the ai_server package. The Alfred bridge generates",
+    ".omni/mcp.local.json from this file with an absolute interpreter and cwd (omni-jev J7).",
+    "",
+    "Every tool the two servers expose needs a decision here. Reads are listed by name;",
+    "anything not listed takes the server grade: home_assistant is 'physical' (so apply,",
+    "turn_on, turn_off, toggle, set_brightness and set_temperature ask every call);",
+    "alfred_plugins has no server grade, so its *_execute_command tools are listed as",
+    "'physical' one by one, because a plugin's effect is whatever the plugin does.",
+    "tests/test_mcp_json_grades.py fails if a tool is added without a grade."
+  ],
+  "mcpServers": {
+    "home_assistant": {
+      "command": "python",
+      "args": [
+        "-m",
+        "ai_server.mcp.home_assistant_server"
+      ],
+      "cwd": "..",
+      "grade": "physical",
+      "tool_grades": {
+        "get_state": "read",
+        "list_entities": "read",
+        "health_check": "read",
+        "resolve_entity": "read",
+        "describe": "read"
+      }
+    },
+    "alfred_plugins": {
+      "command": "python",
+      "args": [
+        "-m",
+        "ai_server.mcp.plugins_server"
+      ],
+      "cwd": "..",
+      "tool_grades": {
+        "example_integration_get_device_info": "read",
+        "example_integration_discover_devices": "read",
+        "example_integration_health_check": "read",
+        "example_integration_execute_command": "physical",
+        "square_root_calculator_device_integration_get_device_info": "read",
+        "square_root_calculator_device_integration_discover_devices": "read",
+        "square_root_calculator_device_integration_health_check": "read",
+        "square_root_calculator_device_integration_execute_command": "physical"
+      }
+    }
+  }
+}

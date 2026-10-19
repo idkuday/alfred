@@ -1,0 +1,83 @@
+# Alfred — migration.md Phase 5, row 5.1.
+#
+# This manifest plus a set of MCP servers plus a voice client is the whole of Alfred.
+# There is deliberately no bespoke brain here: `ai_server/core/` (the single LLM call
+# that both decided and responded) and its JSON-or-text output parser are what this
+# replaces, and deleting them is Phase 5's exit criterion.
+#
+# What went away with them, and why it is not missing:
+#
+#   * the `{"intent": "call_tool", ...}` output protocol   -> real tool calling
+#   * `retry.txt`, the fix-your-malformed-JSON prompt      -> nothing to malform
+#   * `propose_new_tool`                                   -> the `new-capability` graph
+#   * the Forge's LangGraph state machine                  -> a graph (graph-spec §9)
+#   * hand-rolled session persistence (alfred_sessions.db) -> the kernel journal (5.6)
+
+name: alfred
+
+# Sonnet rather than a local model: Alfred's job is tool-calling with a permission gate
+# in the middle, and that is the axis local models are weakest on. The output cap and the
+# context window come from the kernel's model table (64 000 output tokens, 1M context).
+provider: anthropic
+model: claude-sonnet-5-5
+
+# Jev (Typesafe) answers the `decide` tool: matching a spoken description to an entity,
+# and every other bounded either/or an agent node needs. omni-jev J17.
+decision:
+  provider: typesafe
+  model: jev-latest
+
+# Interactive with a `basic` time anchor and clock tool -- both kernel defaults, so neither
+# is written here. Autonomous mode is for an agent that wakes itself; a house assistant
+# that decides on its own to start doing things is a different product and a worse one.
+
+# The resident session behind a voice client: the cost cap is session-wide, not per task.
+# There is no iteration cap (the kernel's default is none); compaction bounds the context.
+budget:
+  cost: 50.00
+
+# Compact at 150K tokens rather than 0.7 of a 1M window: each request is billed on its
+# whole prompt, and a resident session should not carry ~700K tokens per turn (AD5).
+compaction:
+  threshold: 150000
+  keep_recent: 6
+
+assembly:
+  - { name: runtime_core, source: system.md }
+  - { name: execution_policy }
+  - { name: rules, source: rules.md }
+  - { name: skills_index }
+  - { name: skills }
+  - { name: static_memory }
+
+# An upper bound on the grant, intersected with whatever the caller asks for — never a
+# widening (docs/agent-definition.md, "How `tools:` resolves against a caller").
+#
+# `bash` is deliberately absent. Alfred has no reason to run arbitrary shell on the
+# machine that holds the house's credentials, and the encapsulated file tools cover
+# every legitimate thing he does with a filesystem.
+#
+# `mcp` is the whole Home Assistant and plugin surface in one word — the allow-list's
+# own vocabulary for "whatever the servers in .omni/mcp.json turned out to expose".
+# Naming the tools individually would freeze a list that changes whenever a device
+# does, and would have to be edited every time somebody buys a lamp. It is not a
+# widening: every one of those tools is still graded, and mcp.json grades the physical
+# ones so they ask every single call.
+tools:
+  allow:
+    - read_file
+    - list_dir
+    - search
+    - glob
+    - clock
+    - remember
+    - decide
+    - run_context
+    - list_graphs
+    - run_graph
+    - create_graph
+    - mcp
+
+skills:
+  active:
+    - home-graphs

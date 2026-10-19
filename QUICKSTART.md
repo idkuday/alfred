@@ -1,5 +1,28 @@
 # Quick Start Guide
 
+## Running on Omni (default)
+
+Alfred runs its conversations on omni-kernel by default (`ALFRED_BACKEND=omni`). Details, and the graphs node by node, are in [docs/omni.md](docs/omni.md) and [docs/graphs.md](docs/graphs.md).
+
+1. **Install omni-kernel into Alfred's venv** (from its main checkout, on `feat/model-kinds`):
+   ```bash
+   C:\Users\udayr\Documents\Projects\alfred\.venv\Scripts\python.exe -m pip install -e C:\Users\udayr\Documents\Projects\omni-kernel
+   ```
+   `prompt_toolkit` (the kernel's `[cli]` extra) must also be installed in that venv, so the bridge can start the daemon.
+2. **Check the install** prints the kernel's main checkout path and protocol `8`. Stop any daemon left from before with `omni daemon stop`:
+   ```bash
+   C:\Users\udayr\Documents\Projects\alfred\.venv\Scripts\python.exe -c "import omni, omni.codec.client, omni.graph.host; from omni.kernel.api import PROTOCOL_VERSION; print(omni.__file__, PROTOCOL_VERSION)"
+   ```
+3. **One-time Jev key step** (you create this file; agents may not): `C:\Users\udayr\.omni\providers\typesafe\config.yml` with one line, `api_key_file: <path to jev.env>`. It holds the path to the key file, never the key. Alternative: set `TYPESAFE_API_KEY` in the daemon's environment. Until one of these is in place, the Jev decide nodes fail and each graph takes its LLM fallback.
+4. **Home Assistant** (optional): set `HA_URL` and `HA_TOKEN` in `.env`, as in the older steps below.
+5. **Start the server**: `python run_server.py`. The bridge starts the omni daemon on demand.
+6. **Smoke test** (mock Home Assistant, no real house, no model call), from the repo root:
+   ```bash
+   C:\Users\udayr\Documents\Projects\alfred\.venv\Scripts\python.exe -m ai_server.omni_bridge.smoke --dry-run
+   ```
+
+The sections below this one are the `core` path (`ALFRED_BACKEND=core`, AlfredCore on Ollama), kept until the user retires it.
+
 ## Prerequisites
 
 - Python 3.10+

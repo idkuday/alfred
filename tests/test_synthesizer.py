@@ -1,12 +1,19 @@
 """
 Unit tests for Piper TTS Synthesizer.
 """
+import importlib.util
 import pytest
 import wave
 import io
 from pathlib import Path
 from unittest.mock import Mock, patch, MagicMock
 from ai_server.audio.synthesizer import Synthesizer
+
+# Three synthesize tests need the real piper-tts package; without it they fail, so they
+# skip instead (omni-jev plan J21). The others mock the voice and keep running.
+requires_piper = pytest.mark.skipif(
+    importlib.util.find_spec("piper") is None, reason="piper-tts not installed"
+)
 
 
 class TestSynthesizerInit:
@@ -73,6 +80,7 @@ class TestSynthesizerSynthesize:
         self.synth = Synthesizer(voice_model="test_voice.onnx")
         self.synth.voice = Mock()
 
+    @requires_piper
     def test_synthesize_sync_returns_wav_bytes(self):
         """Test synthesize_sync returns valid WAV bytes."""
         # Mock the voice synthesis to return an iterable of audio chunks
@@ -131,6 +139,7 @@ class TestSynthesizerSynthesize:
             synth.synthesize_sync("test")
         assert "not loaded" in str(exc_info.value)
 
+    @requires_piper
     def test_synthesize_sync_with_speaker_id(self):
         """Test synthesize_sync passes speaker_id via SynthesisConfig to voice model."""
         self.synth.speaker_id = 2
@@ -147,6 +156,7 @@ class TestSynthesizerSynthesize:
         assert call_kwargs.args[0] == "Hello"
         assert call_kwargs.kwargs["syn_config"] is not None
 
+    @requires_piper
     @pytest.mark.asyncio
     async def test_synthesize_async_wrapper(self):
         """Test synthesize async wrapper works correctly."""

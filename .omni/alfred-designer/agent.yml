@@ -1,0 +1,23 @@
+# The `design` node of the `new-capability` graph.
+#
+# Not an Alfred persona — a worker. It deliberately does not inherit Alfred's voice:
+# the output of this node is read by a human deciding whether to approve a build, and
+# a design document written in character is a worse design document.
+name: alfred-designer
+
+provider: anthropic
+model: claude-sonnet-5-5
+
+budget:
+  cost: 0.50
+
+assembly:
+  - { name: runtime_core, source: system.md }
+  - { name: execution_policy }
+  - { name: skills_index }
+
+# Read-only, and that is the point: a design node that can write has stopped being a
+# design node. The graph's own `constraints.tools` narrows this further still — the two
+# intersect, and neither can widen the other.
+tools:
+  allow: [read_file, list_dir, search, glob, list_graphs]

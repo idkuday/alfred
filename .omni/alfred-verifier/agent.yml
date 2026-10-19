@@ -1,0 +1,22 @@
+# The `verify` node of the `new-capability` graph.
+#
+# Separate from the builder deliberately. A node that verifies its own work verifies
+# its own assumptions, and this graph exists partly to put a boundary there.
+name: alfred-verifier
+
+provider: anthropic
+model: claude-sonnet-5-5
+
+budget:
+  cost: 0.75
+
+assembly:
+  - { name: runtime_core, source: system.md }
+  - { name: execution_policy }
+  - { name: skills_index }
+
+# Read and run, never write. A verifier that can edit will fix what it finds instead of
+# reporting it, and the review node downstream will then be shown a clean result that
+# nobody decided to accept.
+tools:
+  allow: [read_file, list_dir, search, glob, bash]

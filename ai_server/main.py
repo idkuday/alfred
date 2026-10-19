@@ -1,18 +1,25 @@
 """
 AI Server - Smart Home AI Assistant
 Main FastAPI application for processing commands and controlling devices.
+
+Two brains sit behind ``/execute`` and ``/sessions``, chosen by ``settings.alfred_backend``
+(omni-jev plan J15, section 8): ``omni`` (default) serves them from the Omni bridge
+(``AlfredOmni``, one conversation = one ``front-door`` graph run); ``core`` keeps the older
+AlfredCore + SQLite session path. Whisper, Piper and ``/devices`` do not depend on the choice.
 """
 import logging
 import base64
+import uuid
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
-from .config import settings
+from . import decisions
+from .config import REPO_ROOT, settings
 from .models import Command, CommandResponse, ChatMessage, SessionMeta
 from .integration.home_assistant import HomeAssistantIntegration
 from .plugins import plugin_manager
@@ -43,12 +50,14 @@ transcriber: Optional[Transcriber] = None
 synthesizer: Optional[Synthesizer] = None
 session_store: Optional[SessionStore] = None
 context_provider: Optional[MessageHistoryProvider] = None
+alfred_omni: Optional[Any] = None  # AlfredOmni when alfred_backend == "omni" (imported lazily)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan context manager for startup/shutdown."""
     global ha_integration, intent_processor, alfred_core, transcriber, synthesizer, session_store, context_provider
+    global alfred_omni
 
     # Startup
     logger.info("Starting AI Server...")
@@ -73,19 +82,40 @@ async def lifespan(app: FastAPI):
         plugin_manager.load_plugins()
         logger.info(f"Loaded {len(plugin_manager.list_integrations())} integration plugins")
 
-    # Initialize AlfredCore — single LLM call for all requests
-    try:
-        alfred_core = AlfredCore(
-            model=settings.alfred_core_model,
-            prompt_path=settings.alfred_core_prompt_path,
-            retry_prompt_path=settings.alfred_core_retry_prompt_path,
-            temperature=settings.alfred_core_temperature,
-            max_tokens=settings.alfred_core_max_tokens,
-        )
-        logger.info(f"AlfredCore initialized with model: {settings.alfred_core_model}")
-    except Exception as exc:
-        logger.error(f"Failed to initialize AlfredCore: {exc}", exc_info=True)
-        alfred_core = None
+    use_omni = settings.alfred_backend == "omni"
+
+    if use_omni:
+        # The Omni bridge: one front-door graph run per conversation (J1). A failure here is
+        # logged and Alfred keeps serving; /execute answers 503 until the bridge reconnects
+        # (AlfredOmni.say retries start() once).
+        try:
+            from .omni_bridge import AlfredOmni  # lazy: needs omni-kernel (A5 exports it)
+
+            alfred_omni = AlfredOmni(REPO_ROOT, settings)
+        except Exception as exc:
+            logger.error(f"Omni bridge unavailable: {exc}", exc_info=True)
+            alfred_omni = None
+        if alfred_omni is not None:
+            # The instance is kept even if start() fails, so a later call can reconnect.
+            try:
+                await alfred_omni.start()
+                logger.info("Omni bridge started")
+            except Exception as exc:
+                logger.error(f"Failed to start the Omni bridge: {exc}", exc_info=True)
+    else:
+        # Initialize AlfredCore — single LLM call for all requests
+        try:
+            alfred_core = AlfredCore(
+                model=settings.alfred_core_model,
+                prompt_path=settings.alfred_core_prompt_path,
+                retry_prompt_path=settings.alfred_core_retry_prompt_path,
+                temperature=settings.alfred_core_temperature,
+                max_tokens=settings.alfred_core_max_tokens,
+            )
+            logger.info(f"AlfredCore initialized with model: {settings.alfred_core_model}")
+        except Exception as exc:
+            logger.error(f"Failed to initialize AlfredCore: {exc}", exc_info=True)
+            alfred_core = None
 
     # Initialize Transcriber (Whisper)
     try:
@@ -121,28 +151,35 @@ async def lifespan(app: FastAPI):
         logger.info("TTS is disabled in config")
         synthesizer = None
 
-    # Initialize Session Store
-    try:
-        session_store = SessionStore(db_path=settings.session_db_path)
-        context_provider = MessageHistoryProvider(
-            session_store=session_store,
-            limit=settings.session_history_limit
-        )
-        logger.info(f"Session store initialized at {settings.session_db_path}")
+    # Initialize Session Store (core backend only: the bridge's conversations are graph runs)
+    if not use_omni:
+        try:
+            session_store = SessionStore(db_path=settings.session_db_path)
+            context_provider = MessageHistoryProvider(
+                session_store=session_store,
+                limit=settings.session_history_limit
+            )
+            logger.info(f"Session store initialized at {settings.session_db_path}")
 
-        # Cleanup expired sessions on startup
-        cleaned = session_store.cleanup_expired(timeout_minutes=settings.session_timeout_minutes)
-        if cleaned > 0:
-            logger.info(f"Cleaned up {cleaned} expired sessions on startup")
-    except Exception as exc:
-        logger.error(f"Failed to initialize Session Store: {exc}", exc_info=True)
-        session_store = None
-        context_provider = None
+            # Cleanup expired sessions on startup
+            cleaned = session_store.cleanup_expired(timeout_minutes=settings.session_timeout_minutes)
+            if cleaned > 0:
+                logger.info(f"Cleaned up {cleaned} expired sessions on startup")
+        except Exception as exc:
+            logger.error(f"Failed to initialize Session Store: {exc}", exc_info=True)
+            session_store = None
+            context_provider = None
 
     yield
     
     # Shutdown
     logger.info("Shutting down AI Server...")
+    if alfred_omni:
+        try:
+            await alfred_omni.close()
+        except Exception as exc:
+            logger.error(f"Closing the Omni bridge failed: {exc}", exc_info=True)
+    decisions.close()
     if ha_integration:
         await ha_integration._close_session()
 
@@ -171,6 +208,99 @@ class ExecuteRequest(BaseModel):
     user_input: str
     session_id: Optional[str] = None
     voice_mode: bool = False  # When True, include audio_base64 in response
+
+
+class ContinueRequest(BaseModel):
+    """Load an earlier conversation and say something new in it (J11)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    user_input: str
+    voice_mode: bool = False
+
+
+class AskAnswerRequest(BaseModel):
+    """Answer a pending ask directly, for UIs with buttons (J13)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    decision: str
+
+
+def _http_error_from_bridge(exc: Exception, *, ask: bool = False) -> HTTPException:
+    """Map a bridge exception to the HTTP error of plan section 8, or re-raise it.
+
+    ``ConversationNotFound`` (a ``LookupError``) -> 404; ``BridgeUnavailable`` (a
+    ``RuntimeError``) -> 503; ``ValueError`` -> 400, or 409 for ``answer_ask`` (the ask is not
+    pending). Anything else is a bug and propagates as a 500. ``BridgeUnavailable`` is matched
+    by class name so that importing it does not drag ``omni`` into the rest of Alfred.
+    """
+    if any(cls.__name__ == "BridgeUnavailable" for cls in type(exc).__mro__):
+        return HTTPException(status_code=503, detail=f"Omni bridge unavailable: {exc}")
+    if isinstance(exc, LookupError):
+        return HTTPException(status_code=404, detail=str(exc) or "Conversation not found")
+    if isinstance(exc, ValueError):
+        return HTTPException(status_code=409 if ask else 400, detail=str(exc))
+    raise exc
+
+
+def _require_omni() -> Any:
+    """The bridge, or 503 when it is not configured or did not construct."""
+    if alfred_omni is None:
+        raise HTTPException(status_code=503, detail="Omni bridge not available")
+    return alfred_omni
+
+
+async def _synthesize_base64(text: str, voice_mode: bool) -> Optional[str]:
+    """Speech for ``text`` as base64 WAV when ``voice_mode`` is on; ``None`` on any failure."""
+    if not voice_mode:
+        return None
+    if not synthesizer:
+        logger.warning("Voice mode requested but synthesizer not available")
+        return None
+    try:
+        logger.info("Synthesizing response to audio (voice mode enabled)")
+        wav_bytes = await synthesizer.synthesize(text)
+        logger.debug(f"Synthesized {len(wav_bytes)} bytes of audio")
+        return base64.b64encode(wav_bytes).decode('utf-8')
+    except Exception as exc:
+        logger.error(f"Failed to synthesize audio: {exc}", exc_info=True)
+        # Don't fail the request, just log and continue without audio
+        return None
+
+
+async def _reply_payload(reply: Any, voice_mode: bool) -> dict:
+    """The ``/execute`` response for a ``ConversationReply`` (plan section 8)."""
+    payload: dict[str, Any] = {
+        "intent": "conversation",
+        "answer": reply.answer,
+        "message": reply.answer,
+        "session_id": reply.conversation_id,
+        "conversation_state": reply.state,
+        "pending": reply.pending.model_dump() if reply.pending else None,
+        "new_conversation": reply.new_conversation,
+        "continued_from": reply.continued_from,
+    }
+    audio_base64 = await _synthesize_base64(reply.answer, voice_mode) if reply.answer else None
+    if audio_base64:
+        payload["audio_base64"] = audio_base64
+    return payload
+
+
+def _summary_dict(summary: Any) -> dict:
+    """A ``ConversationSummary`` as the UI's session dict (``session_id`` is the run id)."""
+    data = summary.model_dump()
+    data["session_id"] = summary.conversation_id
+    data["created_at"] = summary.started_at  # the UI's name for it (additive)
+    return data
+
+
+def _entry_dict(entry: Any) -> dict:
+    """A ``TranscriptEntry`` as dict, with the UI's ``content`` / ``timestamp`` names added."""
+    data = entry.model_dump()
+    data["content"] = entry.text
+    data["timestamp"] = entry.at
+    return data
 
 
 def _build_command_from_parameters(parameters: dict) -> Command:
@@ -248,11 +378,27 @@ async def health_check():
     """Health check endpoint."""
     ha_healthy = await ha_integration.health_check() if ha_integration else False
 
+    if settings.alfred_backend == "omni":
+        omni_ok = False
+        if alfred_omni is not None:
+            try:
+                omni_ok = bool(await alfred_omni.healthy())
+            except Exception as exc:
+                logger.warning(f"Omni health check failed: {exc}")
+        return {
+            "status": "healthy" if ha_healthy and omni_ok else "degraded",
+            "home_assistant": "connected" if ha_healthy else "disconnected",
+            "plugins_loaded": len(plugin_manager.list_integrations()),
+            "alfred_backend": "omni",
+            "omni": "connected" if omni_ok else "unavailable",
+        }
+
     return {
         "status": "healthy" if ha_healthy else "degraded",
         "home_assistant": "connected" if ha_healthy else "disconnected",
         "plugins_loaded": len(plugin_manager.list_integrations()),
-        "alfred_backend": "ready" if alfred_core else "unavailable",
+        "alfred_backend": "core",
+        "alfred_core": "ready" if alfred_core else "unavailable",
     }
 
 
@@ -266,7 +412,19 @@ async def execute_command(request: ExecuteRequest):
     - Injects conversation context from session memory before the LLM call.
     - Saves user message and assistant response to session after completion.
     - Optionally synthesizes response to audio when voice_mode=True.
+
+    With ``alfred_backend == "omni"`` the request is served by the Omni bridge instead
+    (plan section 8): ``session_id`` is a front-door run id, and the reply also carries
+    ``conversation_state``, ``pending``, ``new_conversation`` and ``continued_from``.
     """
+    if settings.alfred_backend == "omni":
+        omni = _require_omni()
+        try:
+            reply = await omni.say(request.user_input, request.session_id)
+        except Exception as exc:
+            raise _http_error_from_bridge(exc) from exc
+        return await _reply_payload(reply, request.voice_mode)
+
     # Session management (same regardless of mode)
     current_session_id = request.session_id
     conversation_context = ""
@@ -335,19 +493,7 @@ async def execute_command(request: ExecuteRequest):
             logger.error(f"Failed to save messages to session: {exc}", exc_info=True)
 
     # Synthesize response to audio if voice_mode is enabled
-    audio_base64 = None
-    if request.voice_mode and synthesizer:
-        try:
-            logger.info("Synthesizing response to audio (voice mode enabled)")
-            wav_bytes = await synthesizer.synthesize(assistant_response)
-            audio_base64 = base64.b64encode(wav_bytes).decode('utf-8')
-            logger.debug(f"Synthesized {len(wav_bytes)} bytes of audio")
-        except Exception as exc:
-            logger.error(f"Failed to synthesize audio: {exc}", exc_info=True)
-            # Don't fail the request, just log and continue without audio
-            audio_base64 = None
-    elif request.voice_mode and not synthesizer:
-        logger.warning("Voice mode requested but synthesizer not available")
+    audio_base64 = await _synthesize_base64(assistant_response, request.voice_mode)
 
     # Add session_id and audio to response
     if isinstance(result, dict):
@@ -464,6 +610,17 @@ async def list_sessions():
     Returns:
         List of sessions ordered by last_active (most recent first)
     """
+    if settings.alfred_backend == "omni":
+        omni = _require_omni()
+        try:
+            summaries = await omni.list_conversations()
+        except Exception as exc:
+            raise _http_error_from_bridge(exc) from exc
+        return {
+            "count": len(summaries),
+            "sessions": [_summary_dict(s) for s in summaries],
+        }
+
     if not session_store:
         raise HTTPException(status_code=503, detail="Session store not available")
 
@@ -479,9 +636,17 @@ async def create_session():
     """
     Explicitly create a new conversation session.
 
+    With the omni backend this returns a placeholder id (``pending-<uuid4>``): the first
+    ``/execute`` carrying it starts the run and returns the real id (unknown ids start new
+    conversations, plan section 7.8).
+
     Returns:
         New session_id
     """
+    if settings.alfred_backend == "omni":
+        _require_omni()
+        return {"session_id": f"pending-{uuid.uuid4()}"}
+
     if not session_store:
         raise HTTPException(status_code=503, detail="Session store not available")
 
@@ -500,6 +665,17 @@ async def get_session(session_id: str):
     Returns:
         Session metadata and message history
     """
+    if settings.alfred_backend == "omni":
+        omni = _require_omni()
+        try:
+            transcript = await omni.transcript(session_id)
+        except Exception as exc:
+            raise _http_error_from_bridge(exc) from exc
+        return {
+            "session": _summary_dict(transcript.conversation),
+            "messages": [_entry_dict(e) for e in transcript.entries],
+        }
+
     if not session_store:
         raise HTTPException(status_code=503, detail="Session store not available")
 
@@ -527,12 +703,24 @@ async def delete_session(session_id: str):
     """
     Delete a conversation session and all its messages.
 
+    With the omni backend this cancels the run if it is live and hides it from the list.
+
     Args:
         session_id: Session ID
 
     Returns:
         Success status
     """
+    if settings.alfred_backend == "omni":
+        omni = _require_omni()
+        try:
+            forgotten = await omni.forget(session_id)
+        except Exception as exc:
+            raise _http_error_from_bridge(exc) from exc
+        if not forgotten:
+            raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+        return {"status": "success", "message": f"Session {session_id} deleted"}
+
     if not session_store:
         raise HTTPException(status_code=503, detail="Session store not available")
 
@@ -542,6 +730,42 @@ async def delete_session(session_id: str):
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
 
     return {"status": "success", "message": f"Session {session_id} deleted"}
+
+
+@app.post("/sessions/{session_id}/continue")
+async def continue_session(session_id: str, request: ContinueRequest):
+    """
+    Load an earlier conversation (J11): start a new run seeded with the old transcript.
+
+    Returns the same shape as ``/execute``; ``session_id`` is the NEW run and
+    ``continued_from`` the old one. Omni backend only.
+    """
+    if settings.alfred_backend != "omni":
+        raise HTTPException(status_code=404, detail="Continuing a session needs the omni backend")
+    omni = _require_omni()
+    try:
+        reply = await omni.continue_from(session_id, request.user_input)
+    except Exception as exc:
+        raise _http_error_from_bridge(exc) from exc
+    return await _reply_payload(reply, request.voice_mode)
+
+
+@app.post("/sessions/{session_id}/asks/{req_id}")
+async def answer_session_ask(session_id: str, req_id: str, request: AskAnswerRequest):
+    """
+    Answer a pending ask directly (J13), for UIs with buttons.
+
+    Returns the same shape as ``/execute``; 409 if ``req_id`` is not the pending ask.
+    Omni backend only.
+    """
+    if settings.alfred_backend != "omni":
+        raise HTTPException(status_code=404, detail="Answering an ask needs the omni backend")
+    omni = _require_omni()
+    try:
+        reply = await omni.answer_ask(session_id, req_id, request.decision)
+    except Exception as exc:
+        raise _http_error_from_bridge(exc, ask=True) from exc
+    return await _reply_payload(reply, False)
 
 
 if __name__ == "__main__":
